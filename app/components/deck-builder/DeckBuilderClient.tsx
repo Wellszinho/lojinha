@@ -585,6 +585,69 @@ function simulateOpeningHands(entries: DeckListEntry[], runs = 3000): DeckSimula
   };
 }
 
+function getOpeningHandTheme(section: string) {
+  if (section === "Terrenos") {
+    return {
+      frame: "linear-gradient(145deg, #1b1713, #4b3a2b)",
+      art: "radial-gradient(circle at 35% 25%, rgba(215,180,106,.45), transparent 30%), linear-gradient(135deg, #6b5b43, #19140f)",
+      badge: "#8a6c3e"
+    };
+  }
+
+  if (section === "Ramp") {
+    return {
+      frame: "linear-gradient(145deg, #102618, #275c39)",
+      art: "radial-gradient(circle at 50% 30%, rgba(116,214,128,.55), transparent 32%), linear-gradient(135deg, #2f8a4b, #0d1d13)",
+      badge: "#4fb363"
+    };
+  }
+
+  if (section === "Draw") {
+    return {
+      frame: "linear-gradient(145deg, #0c2238, #285f8d)",
+      art: "radial-gradient(circle at 45% 30%, rgba(128,203,255,.65), transparent 32%), linear-gradient(135deg, #2b74a8, #081521)",
+      badge: "#68b7e8"
+    };
+  }
+
+  if (section === "Remocoes" || section === "Board Wipes") {
+    return {
+      frame: "linear-gradient(145deg, #33100f, #8a2820)",
+      art: "radial-gradient(circle at 45% 25%, rgba(255,113,79,.62), transparent 30%), linear-gradient(135deg, #962d25, #1b0807)",
+      badge: "#e25d41"
+    };
+  }
+
+  if (section === "Protecoes") {
+    return {
+      frame: "linear-gradient(145deg, #3a3115, #a6812d)",
+      art: "radial-gradient(circle at 52% 30%, rgba(255,224,124,.58), transparent 32%), linear-gradient(135deg, #a88131, #1f1808)",
+      badge: "#d7b46a"
+    };
+  }
+
+  if (section === "Combos" || section === "Win Conditions") {
+    return {
+      frame: "linear-gradient(145deg, #27103a, #7141a1)",
+      art: "radial-gradient(circle at 48% 28%, rgba(206,143,255,.62), transparent 33%), linear-gradient(135deg, #7141a1, #130719)",
+      badge: "#b77cff"
+    };
+  }
+
+  return {
+    frame: "linear-gradient(145deg, #191b23, #454a58)",
+    art: "radial-gradient(circle at 48% 28%, rgba(220,226,235,.48), transparent 32%), linear-gradient(135deg, #5d6472, #101117)",
+    badge: "#9aa3b4"
+  };
+}
+
+function getHandVerdict(stats: DeckSimulationStats | null) {
+  if (!stats) return "Aguardando simulacao";
+  if (stats.mulligan <= 18 && stats.lands >= 75) return "Mao inicial estavel";
+  if (stats.mulligan <= 28) return "Mao jogavel, mas exige leitura";
+  return "Mao arriscada, considere mulligan";
+}
+
 export function DeckBuilderClient() {
   const [activeSection, setActiveSection] = useState(0);
   const [colorMode, setColorMode] = useState<"choose" | "auto">("choose");
@@ -1337,34 +1400,51 @@ function ResultSection({
       </Panel>
 
       <Panel title="Simulador de mao inicial" icon={<Play className="size-5" />}>
-        <Button type="button" onClick={handleOpeningHandTest}>
-          <Play className="size-4" />
-          Testar Mao Inicial
-        </Button>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <Stat label="Chance de mulligan" value={simulationStats ? `${simulationStats.mulligan}%` : "--"} />
-          <Stat label="Chance de abrir ramp" value={simulationStats ? `${simulationStats.ramp}%` : "--"} />
-          <Stat label="Chance de abrir draw" value={simulationStats ? `${simulationStats.draw}%` : "--"} />
-          <Stat label="Chance de abrir terrenos" value={simulationStats ? `${simulationStats.lands}%` : "--"} />
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h4 className="font-black text-frost">Mesa de teste</h4>
+            <p className="mt-1 text-sm text-mist">Simule a mao como se estivesse abrindo uma partida real de Commander.</p>
+          </div>
+          <Button type="button" onClick={handleOpeningHandTest}>
+            <Play className="size-4" />
+            {handTested ? "Testar outra mao" : "Testar Mao Inicial"}
+          </Button>
         </div>
+
+        <div className="mt-5 rounded-[8px] border border-gold/20 bg-[radial-gradient(circle_at_50%_18%,rgba(215,180,106,.16),transparent_30%),linear-gradient(145deg,rgba(16,18,26,.96),rgba(4,6,11,.96))] p-4 shadow-[inset_0_0_70px_rgba(0,0,0,.65)]">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            <HandStat label="Mulligan" value={simulationStats ? `${simulationStats.mulligan}%` : "--"} />
+            <HandStat label="Abrir ramp" value={simulationStats ? `${simulationStats.ramp}%` : "--"} />
+            <HandStat label="Abrir draw" value={simulationStats ? `${simulationStats.draw}%` : "--"} />
+            <HandStat label="Abrir terrenos" value={simulationStats ? `${simulationStats.lands}%` : "--"} />
+            <div className="rounded-[7px] border border-gold/30 bg-gold/10 p-3">
+              <span className="text-xs font-bold uppercase text-gold">Leitura da IA</span>
+              <strong className="mt-1 block text-sm text-frost">{getHandVerdict(simulationStats)}</strong>
+            </div>
+          </div>
+
         {handTested ? (
-          <div className="mt-5">
-            <h4 className="font-black text-frost">Mao inicial simulada (7 cartas)</h4>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="mt-6">
+            <div className="flex items-center justify-between gap-3">
+              <h4 className="font-black text-frost">Mao inicial simulada</h4>
+              <span className="rounded-full border border-white/10 bg-black/30 px-3 py-1 text-xs font-bold text-mist">7 cartas</span>
+            </div>
+            <div className="mt-3 overflow-x-auto pb-3">
+              <div className="relative mx-auto h-[310px] min-w-[760px] sm:h-[350px]">
               {openingHand.map((card, index) => (
-                <div key={`${card.name}-${index}`} className="rounded-premium border border-white/10 bg-black/20 p-3">
-                  <span className="text-xs font-bold uppercase text-gold">Carta {index + 1}</span>
-                  <strong className="mt-1 block text-sm text-frost">{card.name}</strong>
-                  <span className="mt-1 block text-xs text-mist">{card.section}</span>
-                </div>
+                <OpeningHandCardView key={`${card.name}-${index}`} card={card} index={index} total={openingHand.length} />
               ))}
+              </div>
             </div>
           </div>
         ) : (
-          <p className="mt-3 text-sm leading-6 text-mist">
-            Clique para simular uma mao real de 7 cartas usando a lista final de 100 cartas.
-          </p>
+          <div className="mt-6 grid min-h-[220px] place-items-center rounded-[7px] border border-dashed border-white/15 bg-black/20 p-6 text-center">
+            <p className="max-w-md text-sm leading-6 text-mist">
+              Clique em <strong className="text-frost">Testar Mao Inicial</strong> para abrir as cartas em leque e avaliar a mao antes da partida.
+            </p>
+          </div>
         )}
+        </div>
       </Panel>
     </section>
   );
@@ -1420,11 +1500,54 @@ function Panel({ title, icon, children }: { title: string; icon: ReactNode; chil
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function HandStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-premium border border-white/10 bg-black/20 p-4">
+    <div className="rounded-[7px] border border-white/10 bg-black/35 p-3">
       <span className="text-xs font-bold uppercase text-mist">{label}</span>
-      <strong className="mt-2 block text-2xl text-frost">{value}</strong>
+      <strong className="mt-1 block text-2xl text-frost">{value}</strong>
     </div>
+  );
+}
+
+function OpeningHandCardView({ card, index, total }: { card: OpeningHandCard; index: number; total: number }) {
+  const theme = getOpeningHandTheme(card.section);
+  const center = (total - 1) / 2;
+  const angle = (index - center) * 8;
+  const offset = (index - center) * 82;
+  const lift = Math.abs(index - center) * 9;
+
+  return (
+    <article
+      className="absolute bottom-1 left-1/2 h-[286px] w-[184px] rounded-[14px] border-[6px] border-black p-2 text-[#17130d] shadow-[0_28px_42px_rgba(0,0,0,.58)] transition duration-200 hover:z-20 hover:shadow-[0_34px_54px_rgba(0,0,0,.72)]"
+      style={{
+        zIndex: index + 1,
+        background: theme.frame,
+        transform: `translateX(calc(-50% + ${offset}px)) translateY(${lift}px) rotate(${angle}deg)`
+      }}
+    >
+      <div className="flex h-full flex-col rounded-[8px] border border-black/70 bg-[#efe6cf] p-2">
+        <div className="flex min-h-9 items-center justify-between gap-2 rounded-[5px] border border-black/30 bg-[#d9ccb0] px-2 py-1">
+          <strong className="truncate text-[13px] leading-tight">{card.name}</strong>
+          <span className="grid size-5 shrink-0 place-items-center rounded-full border border-black/40 text-[10px] font-black" style={{ background: theme.badge }}>
+            {index + 1}
+          </span>
+        </div>
+
+        <div className="mt-2 grid flex-1 place-items-center overflow-hidden rounded-[6px] border-2 border-black/70" style={{ background: theme.art }}>
+          <div className="text-center text-white drop-shadow-[0_2px_4px_rgba(0,0,0,.8)]">
+            <span className="text-[10px] font-black uppercase tracking-[.18em] text-white/75">Magic The Galo</span>
+            <strong className="mt-2 block text-4xl font-black">{card.section.slice(0, 1)}</strong>
+          </div>
+        </div>
+
+        <div className="mt-2 rounded-[5px] border border-black/35 bg-[#d9ccb0] px-2 py-1 text-[11px] font-black">
+          {card.section}
+        </div>
+
+        <p className="mt-2 min-h-12 rounded-[5px] border border-black/20 bg-[#f8f1dc] p-2 text-[10px] leading-4">
+          Carta aberta na simulacao para avaliar terrenos, curva e plano dos primeiros turnos.
+        </p>
+      </div>
+    </article>
   );
 }
