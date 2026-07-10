@@ -54,11 +54,11 @@ export const manaColorClasses: Record<ManaColor, string> = {
 };
 
 export const manaColorImages: Record<ManaColor, string> = {
-  W: "/images/mana/white.svg",
-  U: "/images/mana/blue.svg",
-  B: "/images/mana/black.svg",
-  R: "/images/mana/red.svg",
-  G: "/images/mana/green.svg",
+  W: "/images/mana/white.png",
+  U: "/images/mana/blue.png",
+  B: "/images/mana/black.png",
+  R: "/images/mana/red.png",
+  G: "/images/mana/green.png",
   C: "/images/mana/colorless.svg"
 };
 
