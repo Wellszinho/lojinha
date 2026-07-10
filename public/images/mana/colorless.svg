@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Colorless mana">
+  <circle cx="32" cy="32" r="30" fill="#c9ccd1" stroke="#787d85" stroke-width="3"/>
+  <path fill="#16181b" d="M32 7l19 25-19 25-19-25z"/>
+  <path fill="#eef0f3" opacity=".7" d="M32 13l12.2 16H32z"/>
+  <path fill="#8d939c" d="M32 13v38L19.8 32z"/>
+</svg>

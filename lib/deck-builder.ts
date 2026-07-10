@@ -53,6 +53,15 @@ export const manaColorClasses: Record<ManaColor, string> = {
   C: "bg-zinc-400 text-zinc-950 border-zinc-200"
 };
 
+export const manaColorImages: Record<ManaColor, string> = {
+  W: "/images/mana/white.svg",
+  U: "/images/mana/blue.svg",
+  B: "/images/mana/black.svg",
+  R: "/images/mana/red.svg",
+  G: "/images/mana/green.svg",
+  C: "/images/mana/colorless.svg"
+};
+
 export const colorIdentities: ColorIdentity[] = [
   { id: "w", group: "Monocolor", name: "Branco", code: "W", colors: ["W"], description: "Protecao, lifegain, tokens e controle de mesa." },
   { id: "u", group: "Monocolor", name: "Azul", code: "U", colors: ["U"], description: "Compra, counters, tempo e magicas tecnicas." },

@@ -27,7 +27,7 @@ import {
   commanderFilters,
   commanderPool,
   getColorIdentityById,
-  manaColorClasses,
+  manaColorImages,
   manaColorLabels,
   preferenceQuestions,
   styleOptions,
@@ -98,16 +98,16 @@ function ManaPips({ colors, size = "sm" }: { colors: ManaColor[]; size?: "sm" | 
   return (
     <span className="inline-flex items-center gap-1" aria-label={colors.map((color) => manaColorLabels[color]).join(", ")}>
       {colors.map((color) => (
-        <span
+        <img
           key={color}
+          src={manaColorImages[color]}
+          alt={manaColorLabels[color]}
+          title={manaColorLabels[color]}
           className={cn(
-            "grid place-items-center rounded-full border font-black shadow-[0_0_14px_rgba(255,255,255,.12)]",
-            manaColorClasses[color],
-            size === "md" ? "size-7 text-xs" : "size-5 text-[10px]"
+            "rounded-full border border-white/20 bg-black/20 object-contain shadow-[0_0_14px_rgba(255,255,255,.16)]",
+            size === "md" ? "size-8" : "size-6"
           )}
-        >
-          {color}
-        </span>
+        />
       ))}
     </span>
   );
