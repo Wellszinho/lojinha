@@ -15,7 +15,8 @@ import {
   Share2,
   Shuffle,
   Sparkles,
-  Wand2
+  Wand2,
+  X
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
@@ -667,12 +668,25 @@ function getHandVerdict(stats: DeckSimulationStats | null) {
   return "Mao arriscada, considere mulligan";
 }
 
-function getScryfallNamedUrl(cardName: string) {
-  return `https://api.scryfall.com/cards/named?exact=${encodeURIComponent(cardName)}`;
+function getScryfallNamedUrl(cardName: string, mode: "exact" | "fuzzy" = "exact") {
+  return `https://api.scryfall.com/cards/named?${mode}=${encodeURIComponent(cardName)}`;
 }
 
 function getScryfallImageFromCard(card: ScryfallCardResponse) {
   return card.image_uris?.normal ?? card.card_faces?.[0]?.image_uris?.normal ?? null;
+}
+
+async function fetchScryfallCardImage(cardName: string) {
+  for (const mode of ["exact", "fuzzy"] as const) {
+    const response = await fetch(getScryfallNamedUrl(cardName, mode));
+    if (!response.ok) continue;
+
+    const card = (await response.json()) as ScryfallCardResponse;
+    const imageUrl = getScryfallImageFromCard(card);
+    if (imageUrl) return imageUrl;
+  }
+
+  return null;
 }
 
 export function DeckBuilderClient() {
@@ -1269,6 +1283,7 @@ function ResultSection({
   const [exportStatus, setExportStatus] = useState("");
   const [openingHand, setOpeningHand] = useState<OpeningHandCard[]>([]);
   const [simulationStats, setSimulationStats] = useState<DeckSimulationStats | null>(null);
+  const [isHandOverlayOpen, setIsHandOverlayOpen] = useState(false);
   const deckList = useMemo(() => buildDeckList(deckSections, activeIdentity), [activeIdentity, deckSections]);
 
   async function handleExport(option: string) {
@@ -1327,6 +1342,7 @@ function ResultSection({
     setHandTested(true);
     setSimulationStats(simulateOpeningHands(deckList));
     setOpeningHand(drawOpeningHand(deckList));
+    setIsHandOverlayOpen(true);
   }
 
   return (
@@ -1438,40 +1454,25 @@ function ResultSection({
           </Button>
         </div>
 
-        <div className="mt-5 rounded-[8px] border border-gold/20 bg-[radial-gradient(circle_at_50%_18%,rgba(215,180,106,.16),transparent_30%),linear-gradient(145deg,rgba(16,18,26,.96),rgba(4,6,11,.96))] p-4 shadow-[inset_0_0_70px_rgba(0,0,0,.65)]">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            <HandStat label="Mulligan" value={simulationStats ? `${simulationStats.mulligan}%` : "--"} />
-            <HandStat label="Abrir ramp" value={simulationStats ? `${simulationStats.ramp}%` : "--"} />
-            <HandStat label="Abrir draw" value={simulationStats ? `${simulationStats.draw}%` : "--"} />
-            <HandStat label="Abrir terrenos" value={simulationStats ? `${simulationStats.lands}%` : "--"} />
-            <div className="rounded-[7px] border border-gold/30 bg-gold/10 p-3">
-              <span className="text-xs font-bold uppercase text-gold">Leitura da IA</span>
-              <strong className="mt-1 block text-sm text-frost">{getHandVerdict(simulationStats)}</strong>
-            </div>
-          </div>
-
-        {handTested ? (
-          <div className="mt-6">
-            <div className="flex items-center justify-between gap-3">
-              <h4 className="font-black text-frost">Mao inicial simulada</h4>
-              <span className="rounded-full border border-white/10 bg-black/30 px-3 py-1 text-xs font-bold text-mist">7 cartas</span>
-            </div>
-            <div className="mt-3 overflow-x-auto pb-3">
-              <div className="relative mx-auto h-[310px] min-w-[760px] sm:h-[350px]">
-              {openingHand.map((card, index) => (
-                <OpeningHandCardView key={`${card.name}-${index}`} card={card} index={index} total={openingHand.length} />
-              ))}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="mt-6 grid min-h-[220px] place-items-center rounded-[7px] border border-dashed border-white/15 bg-black/20 p-6 text-center">
-            <p className="max-w-md text-sm leading-6 text-mist">
-              Clique em <strong className="text-frost">Testar Mao Inicial</strong> para abrir as cartas em leque e avaliar a mao antes da partida.
-            </p>
-          </div>
-        )}
+        <div className="mt-4 rounded-[7px] border border-white/10 bg-black/20 p-4">
+          <p className="text-sm leading-6 text-mist">
+            Ao testar, a mao abre em tela cheia com as 7 cartas reais, fundo desfocado e as chances no topo.
+          </p>
+          {handTested ? (
+            <button type="button" onClick={() => setIsHandOverlayOpen(true)} className="mt-3 text-sm font-black text-gold underline-offset-4 hover:underline">
+              Ver ultima mao simulada
+            </button>
+          ) : null}
         </div>
+
+        {isHandOverlayOpen ? (
+          <OpeningHandOverlay
+            hand={openingHand}
+            stats={simulationStats}
+            onClose={() => setIsHandOverlayOpen(false)}
+            onTestAgain={handleOpeningHandTest}
+          />
+        ) : null}
       </Panel>
     </section>
   );
@@ -1536,13 +1537,93 @@ function HandStat({ label, value }: { label: string; value: string }) {
   );
 }
 
+function OpeningHandOverlay({
+  hand,
+  stats,
+  onClose,
+  onTestAgain
+}: {
+  hand: OpeningHandCard[];
+  stats: DeckSimulationStats | null;
+  onClose: () => void;
+  onTestAgain: () => void;
+}) {
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+
+    window.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-[120] overflow-hidden bg-black/80 px-4 py-4 text-frost backdrop-blur-md sm:px-6 sm:py-6">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_18%,rgba(215,180,106,.2),transparent_30%),radial-gradient(circle_at_20%_80%,rgba(93,63,161,.2),transparent_28%)]" />
+      <div className="relative z-10 mx-auto flex h-full max-w-[1500px] flex-col">
+        <div className="rounded-[8px] border border-gold/25 bg-obsidian/85 p-4 shadow-[0_18px_60px_rgba(0,0,0,.45)]">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <span className="text-xs font-black uppercase tracking-[.22em] text-gold">Simulador de mao inicial</span>
+              <h3 className="mt-1 text-2xl font-black text-frost">Mesa de teste</h3>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" onClick={onTestAgain}>
+                <Shuffle className="size-4" />
+                Testar outra mao
+              </Button>
+              <Button type="button" variant="secondary" onClick={onClose}>
+                <X className="size-4" />
+                Fechar
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            <HandStat label="Mulligan" value={stats ? `${stats.mulligan}%` : "--"} />
+            <HandStat label="Abrir ramp" value={stats ? `${stats.ramp}%` : "--"} />
+            <HandStat label="Abrir draw" value={stats ? `${stats.draw}%` : "--"} />
+            <HandStat label="Abrir terrenos" value={stats ? `${stats.lands}%` : "--"} />
+            <div className="rounded-[7px] border border-gold/30 bg-gold/10 p-3">
+              <span className="text-xs font-bold uppercase text-gold">Leitura da IA</span>
+              <strong className="mt-1 block text-sm text-frost">{getHandVerdict(stats)}</strong>
+            </div>
+          </div>
+        </div>
+
+        <div className="relative mt-4 min-h-0 flex-1 rounded-[8px] border border-white/10 bg-[radial-gradient(circle_at_50%_30%,rgba(255,255,255,.08),transparent_28%),linear-gradient(145deg,rgba(14,17,22,.78),rgba(3,5,10,.9))] shadow-[inset_0_0_100px_rgba(0,0,0,.7)]">
+          <div className="absolute left-4 top-4 rounded-full border border-white/10 bg-black/35 px-3 py-1 text-xs font-black text-mist">
+            7 cartas
+          </div>
+          <div className="h-full overflow-x-auto overflow-y-visible">
+            <div className="relative mx-auto h-full min-h-[430px] min-w-[980px]">
+              {hand.map((card, index) => (
+                <OpeningHandCardView key={`${card.name}-${index}`} card={card} index={index} total={hand.length} />
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function OpeningHandCardView({ card, index, total }: { card: OpeningHandCard; index: number; total: number }) {
+  const [isHovered, setIsHovered] = useState(false);
   const [cardImage, setCardImage] = useState<string | null | undefined>(() => cardImageCache.get(card.name));
   const theme = getOpeningHandTheme(card.section);
   const center = (total - 1) / 2;
-  const angle = (index - center) * 8;
-  const offset = (index - center) * 82;
-  const lift = Math.abs(index - center) * 9;
+  const angle = isHovered ? 0 : (index - center) * 7;
+  const offset = (index - center) * 112;
+  const lift = isHovered ? -64 : Math.abs(index - center) * 12;
+  const scale = isHovered ? 1.34 : 1;
 
   useEffect(() => {
     let cancelled = false;
@@ -1555,10 +1636,8 @@ function OpeningHandCardView({ card, index, total }: { card: OpeningHandCard; in
 
     setCardImage(undefined);
 
-    fetch(getScryfallNamedUrl(card.name))
-      .then((response) => (response.ok ? (response.json() as Promise<ScryfallCardResponse>) : null))
-      .then((scryfallCard) => {
-        const imageUrl = scryfallCard ? getScryfallImageFromCard(scryfallCard) : null;
+    fetchScryfallCardImage(card.name)
+      .then((imageUrl) => {
         cardImageCache.set(card.name, imageUrl);
         if (!cancelled) setCardImage(imageUrl);
       })
@@ -1574,10 +1653,16 @@ function OpeningHandCardView({ card, index, total }: { card: OpeningHandCard; in
 
   return (
     <article
-      className="absolute bottom-1 left-1/2 h-[286px] w-[204px] rounded-[14px] text-[#17130d] shadow-[0_28px_42px_rgba(0,0,0,.58)] transition duration-200 hover:z-20 hover:shadow-[0_34px_54px_rgba(0,0,0,.72)] sm:h-[322px] sm:w-[230px]"
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      onFocus={() => setIsHovered(true)}
+      onBlur={() => setIsHovered(false)}
+      tabIndex={0}
+      className="absolute bottom-[8%] left-1/2 h-[360px] w-[258px] rounded-[16px] text-[#17130d] outline-none shadow-[0_28px_42px_rgba(0,0,0,.58)] transition-[filter,box-shadow] duration-200 hover:shadow-[0_34px_70px_rgba(0,0,0,.82)] focus:shadow-[0_34px_70px_rgba(0,0,0,.82)] sm:h-[430px] sm:w-[308px]"
       style={{
-        zIndex: index + 1,
-        transform: `translateX(calc(-50% + ${offset}px)) translateY(${lift}px) rotate(${angle}deg)`
+        zIndex: isHovered ? 80 : index + 1,
+        transform: `translateX(calc(-50% + ${offset}px)) translateY(${lift}px) rotate(${angle}deg) scale(${scale})`,
+        transformOrigin: "bottom center"
       }}
     >
       {cardImage ? (
