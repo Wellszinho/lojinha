@@ -7,6 +7,7 @@ import { absoluteUrl } from "@/lib/utils";
 export default function sitemap(): MetadataRoute.Sitemap {
   const storeRoutes = [
     "",
+    "/criar-deck",
     "/deck-analyzer",
     "/marketplace",
     "/produtos",

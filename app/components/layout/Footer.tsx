@@ -6,6 +6,7 @@ import { Logo } from "@/components/ui/Logo";
 const usefulLinks = [
   ["Produtos", "/produtos"],
   ["Classificados Magic", "/marketplace"],
+  ["Criar Deck", "/criar-deck"],
   ["Analisador de Deck", "/deck-analyzer"],
   ["Cartas Avulsas", "/cartas-avulsas"],
   ["Deck Boxes", "/deck-boxes"],
