@@ -18,7 +18,7 @@ import {
   Wand2
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import {
@@ -72,6 +72,17 @@ type DeckSimulationStats = {
   lands: number;
 };
 
+type ScryfallCardResponse = {
+  image_uris?: {
+    normal?: string;
+  };
+  card_faces?: Array<{
+    image_uris?: {
+      normal?: string;
+    };
+  }>;
+};
+
 const wizardSections = [
   { title: "Identidade de cores", description: "Escolha as cores ou deixe a IA sugerir com base no plano do deck." },
   { title: "Orcamento", description: "Defina quanto o deck pode custar e se existe teto real de investimento." },
@@ -107,6 +118,8 @@ const optimizationOptions = [
 ];
 
 const exportOptions = ["LigaMagic", "Moxfield", "Archidekt", "ManaBox", "TappedOut", "Texto", "CSV", "PDF"];
+
+const cardImageCache = new Map<string, string | null>();
 
 const sectionTargets: Record<string, number> = {
   Comandante: 1,
@@ -412,7 +425,13 @@ function getExplanation(
 
 function isPlaceholderCard(name: string) {
   const lower = name.toLowerCase();
-  return lower.includes("pacote") || lower.includes("flexiveis") || lower.includes("opcional") || lower.includes("recorrente");
+  return (
+    lower.includes("pacote") ||
+    lower.includes("flexiveis") ||
+    lower.includes("opcional") ||
+    lower.includes("recorrente") ||
+    name.includes(" + ")
+  );
 }
 
 function addUniqueCard(entries: DeckListEntry[], name: string, section: string) {
@@ -646,6 +665,14 @@ function getHandVerdict(stats: DeckSimulationStats | null) {
   if (stats.mulligan <= 18 && stats.lands >= 75) return "Mao inicial estavel";
   if (stats.mulligan <= 28) return "Mao jogavel, mas exige leitura";
   return "Mao arriscada, considere mulligan";
+}
+
+function getScryfallNamedUrl(cardName: string) {
+  return `https://api.scryfall.com/cards/named?exact=${encodeURIComponent(cardName)}`;
+}
+
+function getScryfallImageFromCard(card: ScryfallCardResponse) {
+  return card.image_uris?.normal ?? card.card_faces?.[0]?.image_uris?.normal ?? null;
 }
 
 export function DeckBuilderClient() {
@@ -1510,44 +1537,87 @@ function HandStat({ label, value }: { label: string; value: string }) {
 }
 
 function OpeningHandCardView({ card, index, total }: { card: OpeningHandCard; index: number; total: number }) {
+  const [cardImage, setCardImage] = useState<string | null | undefined>(() => cardImageCache.get(card.name));
   const theme = getOpeningHandTheme(card.section);
   const center = (total - 1) / 2;
   const angle = (index - center) * 8;
   const offset = (index - center) * 82;
   const lift = Math.abs(index - center) * 9;
 
+  useEffect(() => {
+    let cancelled = false;
+    const cached = cardImageCache.get(card.name);
+
+    if (cached !== undefined) {
+      setCardImage(cached);
+      return;
+    }
+
+    setCardImage(undefined);
+
+    fetch(getScryfallNamedUrl(card.name))
+      .then((response) => (response.ok ? (response.json() as Promise<ScryfallCardResponse>) : null))
+      .then((scryfallCard) => {
+        const imageUrl = scryfallCard ? getScryfallImageFromCard(scryfallCard) : null;
+        cardImageCache.set(card.name, imageUrl);
+        if (!cancelled) setCardImage(imageUrl);
+      })
+      .catch(() => {
+        cardImageCache.set(card.name, null);
+        if (!cancelled) setCardImage(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [card.name]);
+
   return (
     <article
-      className="absolute bottom-1 left-1/2 h-[286px] w-[184px] rounded-[14px] border-[6px] border-black p-2 text-[#17130d] shadow-[0_28px_42px_rgba(0,0,0,.58)] transition duration-200 hover:z-20 hover:shadow-[0_34px_54px_rgba(0,0,0,.72)]"
+      className="absolute bottom-1 left-1/2 h-[286px] w-[204px] rounded-[14px] text-[#17130d] shadow-[0_28px_42px_rgba(0,0,0,.58)] transition duration-200 hover:z-20 hover:shadow-[0_34px_54px_rgba(0,0,0,.72)] sm:h-[322px] sm:w-[230px]"
       style={{
         zIndex: index + 1,
-        background: theme.frame,
         transform: `translateX(calc(-50% + ${offset}px)) translateY(${lift}px) rotate(${angle}deg)`
       }}
     >
-      <div className="flex h-full flex-col rounded-[8px] border border-black/70 bg-[#efe6cf] p-2">
-        <div className="flex min-h-9 items-center justify-between gap-2 rounded-[5px] border border-black/30 bg-[#d9ccb0] px-2 py-1">
-          <strong className="truncate text-[13px] leading-tight">{card.name}</strong>
-          <span className="grid size-5 shrink-0 place-items-center rounded-full border border-black/40 text-[10px] font-black" style={{ background: theme.badge }}>
-            {index + 1}
-          </span>
-        </div>
+      {cardImage ? (
+        <img
+          src={cardImage}
+          alt={card.name}
+          title={`${card.name} - ${card.section}`}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => {
+            cardImageCache.set(card.name, null);
+            setCardImage(null);
+          }}
+          className="h-full w-full rounded-[12px] object-contain"
+        />
+      ) : (
+        <div className="flex h-full flex-col rounded-[14px] border-[6px] border-black p-2" style={{ background: theme.frame }}>
+          <div className="flex h-full flex-col rounded-[8px] border border-black/70 bg-[#efe6cf] p-2">
+            <div className="flex min-h-9 items-center justify-between gap-2 rounded-[5px] border border-black/30 bg-[#d9ccb0] px-2 py-1">
+              <strong className="truncate text-[13px] leading-tight">{card.name}</strong>
+              <span className="grid size-5 shrink-0 place-items-center rounded-full border border-black/40 text-[10px] font-black" style={{ background: theme.badge }}>
+                {index + 1}
+              </span>
+            </div>
 
-        <div className="mt-2 grid flex-1 place-items-center overflow-hidden rounded-[6px] border-2 border-black/70" style={{ background: theme.art }}>
-          <div className="text-center text-white drop-shadow-[0_2px_4px_rgba(0,0,0,.8)]">
-            <span className="text-[10px] font-black uppercase tracking-[.18em] text-white/75">Magic The Galo</span>
-            <strong className="mt-2 block text-4xl font-black">{card.section.slice(0, 1)}</strong>
+            <div className="mt-2 grid flex-1 place-items-center overflow-hidden rounded-[6px] border-2 border-black/70" style={{ background: theme.art }}>
+              <div className="px-3 text-center text-white drop-shadow-[0_2px_4px_rgba(0,0,0,.8)]">
+                <span className="text-[10px] font-black uppercase tracking-[.18em] text-white/75">
+                  {cardImage === undefined ? "Buscando carta real" : "Imagem nao encontrada"}
+                </span>
+                <strong className="mt-2 block text-lg font-black">{card.name}</strong>
+              </div>
+            </div>
+
+            <div className="mt-2 rounded-[5px] border border-black/35 bg-[#d9ccb0] px-2 py-1 text-[11px] font-black">
+              {card.section}
+            </div>
           </div>
         </div>
-
-        <div className="mt-2 rounded-[5px] border border-black/35 bg-[#d9ccb0] px-2 py-1 text-[11px] font-black">
-          {card.section}
-        </div>
-
-        <p className="mt-2 min-h-12 rounded-[5px] border border-black/20 bg-[#f8f1dc] p-2 text-[10px] leading-4">
-          Carta aberta na simulacao para avaliar terrenos, curva e plano dos primeiros turnos.
-        </p>
-      </div>
+      )}
     </article>
   );
 }
