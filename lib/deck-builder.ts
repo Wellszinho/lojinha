@@ -49,7 +49,7 @@ export const manaColorClasses: Record<ManaColor, string> = {
   U: "bg-sky-400 text-zinc-950 border-sky-200",
   B: "bg-zinc-900 text-white border-zinc-600",
   R: "bg-red-500 text-white border-red-300",
-  G: "bg-emerald-500 text-zinc-950 border-emerald-200",
+  G: "bg-green-400 text-zinc-950 border-green-100 shadow-[0_0_18px_rgba(74,222,128,.45)]",
   C: "bg-zinc-400 text-zinc-950 border-zinc-200"
 };
 
