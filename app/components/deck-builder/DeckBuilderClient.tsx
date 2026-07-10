@@ -54,6 +54,24 @@ type DeckSection = {
   cards: DeckCardLine[];
 };
 
+type DeckListEntry = {
+  name: string;
+  quantity: number;
+  section: string;
+};
+
+type OpeningHandCard = {
+  name: string;
+  section: string;
+};
+
+type DeckSimulationStats = {
+  mulligan: number;
+  ramp: number;
+  draw: number;
+  lands: number;
+};
+
 const wizardSections = [
   { title: "Identidade de cores", description: "Escolha as cores ou deixe a IA sugerir com base no plano do deck." },
   { title: "Orcamento", description: "Defina quanto o deck pode custar e se existe teto real de investimento." },
@@ -89,6 +107,88 @@ const optimizationOptions = [
 ];
 
 const exportOptions = ["LigaMagic", "Moxfield", "Archidekt", "ManaBox", "TappedOut", "Texto", "CSV", "PDF"];
+
+const sectionTargets: Record<string, number> = {
+  Comandante: 1,
+  Terrenos: 36,
+  Ramp: 10,
+  Draw: 10,
+  Tutores: 4,
+  Remocoes: 8,
+  "Board Wipes": 3,
+  Protecoes: 5,
+  "Win Conditions": 5,
+  Combos: 3,
+  Utilidades: 15
+};
+
+const basicLandsByColor: Record<ManaColor, string> = {
+  W: "Plains",
+  U: "Island",
+  B: "Swamp",
+  R: "Mountain",
+  G: "Forest",
+  C: "Wastes"
+};
+
+const fallbackCardsBySection: Record<string, string[]> = {
+  Ramp: [
+    "Farseek",
+    "Three Visits",
+    "Kodama's Reach",
+    "Thought Vessel",
+    "Fellwar Stone",
+    "Talisman of Curiosity",
+    "Chromatic Lantern",
+    "Sakura-Tribe Elder",
+    "Skyshroud Claim",
+    "Birds of Paradise"
+  ],
+  Draw: [
+    "Harmonize",
+    "Beast Whisperer",
+    "Return of the Wildspeaker",
+    "Fact or Fiction",
+    "Ponder",
+    "Preordain",
+    "Sign in Blood",
+    "Read the Bones",
+    "Bident of Thassa",
+    "Tome of Legends"
+  ],
+  Tutores: ["Worldly Tutor", "Mystical Tutor", "Eladamri's Call", "Shared Summons", "Diabolic Tutor"],
+  Remocoes: [
+    "Beast Within",
+    "Generous Gift",
+    "Reality Shift",
+    "Krosan Grip",
+    "Rapid Hybridization",
+    "Nature's Claim",
+    "Resculpt",
+    "Return to Nature"
+  ],
+  "Board Wipes": ["Blasphemous Act", "Austere Command", "Evacuation", "Crux of Fate"],
+  Protecoes: ["Heroic Intervention", "Swiftfoot Boots", "Lightning Greaves", "Tamiyo's Safekeeping", "Counterspell"],
+  "Win Conditions": ["Finale of Devastation", "Craterhoof Behemoth", "Overwhelming Stampede", "Aetherflux Reservoir", "Triumph of the Hordes"],
+  Combos: ["Isochron Scepter", "Dramatic Reversal", "Walking Ballista", "Freed from the Real"],
+  Utilidades: [
+    "Eternal Witness",
+    "Reclamation Sage",
+    "Scavenging Ooze",
+    "Commander's Sphere",
+    "Reliquary Tower",
+    "Bojuka Bog",
+    "Hero's Blade",
+    "Soul-Guide Lantern",
+    "Panharmonicon",
+    "Whispersilk Cloak",
+    "Sensei's Divining Top",
+    "Arcane Lighthouse",
+    "Haywire Mite",
+    "Mystic Sanctuary",
+    "Rogue's Passage"
+  ]
+};
 
 const initialPreferences = Object.fromEntries(
   preferenceQuestions.map((question) => [question.id, question.options[0]])
@@ -310,6 +410,181 @@ function getExplanation(
   ];
 }
 
+function isPlaceholderCard(name: string) {
+  const lower = name.toLowerCase();
+  return lower.includes("pacote") || lower.includes("flexiveis") || lower.includes("opcional") || lower.includes("recorrente");
+}
+
+function addUniqueCard(entries: DeckListEntry[], name: string, section: string) {
+  if (isPlaceholderCard(name)) return;
+  if (entries.some((entry) => entry.name.toLowerCase() === name.toLowerCase())) return;
+  entries.push({ name, quantity: 1, section });
+}
+
+function buildDeckList(deckSections: DeckSection[], identity: ColorIdentity) {
+  const entries: DeckListEntry[] = [];
+  const commander = deckSections.find((section) => section.title === "Comandante")?.cards[0]?.name ?? "Comandante";
+  entries.push({ name: commander, quantity: 1, section: "Comandante" });
+
+  const landSection = deckSections.find((section) => section.title === "Terrenos");
+  landSection?.cards.forEach((card) => addUniqueCard(entries, card.name, "Terrenos"));
+
+  const currentLandCount = entries.filter((entry) => entry.section === "Terrenos").reduce((sum, entry) => sum + entry.quantity, 0);
+  const colors = identity.colors.length ? identity.colors : (["C"] as ManaColor[]);
+  const basicTarget = Math.max(0, sectionTargets.Terrenos - currentLandCount);
+  colors.forEach((color, index) => {
+    const remainingColors = colors.length - index;
+    const alreadyAdded = entries
+      .filter((entry) => entry.section === "Terrenos" && Object.values(basicLandsByColor).includes(entry.name))
+      .reduce((sum, entry) => sum + entry.quantity, 0);
+    const quantity = index === colors.length - 1 ? basicTarget - alreadyAdded : Math.floor((basicTarget - alreadyAdded) / remainingColors);
+    if (quantity > 0) entries.push({ name: basicLandsByColor[color], quantity, section: "Terrenos" });
+  });
+
+  deckSections
+    .filter((section) => section.title !== "Comandante" && section.title !== "Terrenos")
+    .forEach((section) => {
+      const target = sectionTargets[section.title] ?? section.cards.length;
+      section.cards.forEach((card) => {
+        if (card.name !== commander) addUniqueCard(entries, card.name, section.title);
+      });
+
+      const fallback = fallbackCardsBySection[section.title] ?? [];
+      let fallbackIndex = 0;
+      while (entries.filter((entry) => entry.section === section.title).length < target && fallbackIndex < fallback.length) {
+        addUniqueCard(entries, fallback[fallbackIndex], section.title);
+        fallbackIndex += 1;
+      }
+    });
+
+  const currentTotal = entries.reduce((sum, entry) => sum + entry.quantity, 0);
+  if (currentTotal < 100) {
+    entries.push({ name: identity.colors.includes("G") ? "Forest" : "Wastes", quantity: 100 - currentTotal, section: "Terrenos" });
+  }
+
+  return entries;
+}
+
+function formatDeckText(entries: DeckListEntry[], format: string) {
+  const grouped = entries.reduce<Record<string, DeckListEntry[]>>((acc, entry) => {
+    acc[entry.section] = [...(acc[entry.section] ?? []), entry];
+    return acc;
+  }, {});
+
+  const lines = [`Magic The Galo - Exportacao ${format}`, ""];
+  Object.entries(grouped).forEach(([section, cards]) => {
+    lines.push(section);
+    cards.forEach((card) => lines.push(`${card.quantity} ${card.name}`));
+    lines.push("");
+  });
+
+  return lines.join("\n");
+}
+
+function formatDeckCsv(entries: DeckListEntry[]) {
+  return [
+    "section,quantity,name",
+    ...entries.map((entry) => `"${entry.section}",${entry.quantity},"${entry.name.replaceAll('"', '""')}"`)
+  ].join("\n");
+}
+
+function downloadTextFile(filename: string, content: string, type = "text/plain;charset=utf-8") {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function copyText(content: string) {
+  try {
+    await navigator.clipboard.writeText(content);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function openPrintableDeck(entries: DeckListEntry[], explanation: Array<{ title: string; text: string }>) {
+  const deckText = formatDeckText(entries, "PDF");
+  const explanationHtml = explanation.map((item) => `<h2>${item.title}</h2><p>${item.text}</p>`).join("");
+  const popup = window.open("", "_blank", "noopener,noreferrer");
+  if (!popup) return false;
+  popup.document.write(`
+    <html>
+      <head>
+        <title>Magic The Galo - Deck</title>
+        <style>
+          body { font-family: Arial, sans-serif; padding: 32px; color: #171717; }
+          h1 { margin-bottom: 8px; }
+          pre { white-space: pre-wrap; border: 1px solid #ddd; padding: 16px; border-radius: 8px; }
+          h2 { margin-top: 24px; }
+        </style>
+      </head>
+      <body>
+        <h1>Magic The Galo - Deck Builder</h1>
+        <pre>${deckText.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}</pre>
+        ${explanationHtml}
+        <script>window.print()</script>
+      </body>
+    </html>
+  `);
+  popup.document.close();
+  return true;
+}
+
+function expandDeckEntries(entries: DeckListEntry[]) {
+  return entries
+    .filter((entry) => entry.section !== "Comandante")
+    .flatMap((entry) => Array.from({ length: entry.quantity }, () => ({ name: entry.name, section: entry.section })));
+}
+
+function shuffleCards(cards: OpeningHandCard[]) {
+  const shuffled = [...cards];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+  return shuffled;
+}
+
+function drawOpeningHand(entries: DeckListEntry[]) {
+  return shuffleCards(expandDeckEntries(entries)).slice(0, 7);
+}
+
+function simulateOpeningHands(entries: DeckListEntry[], runs = 3000): DeckSimulationStats {
+  const library = expandDeckEntries(entries);
+  if (!library.length) return { mulligan: 0, ramp: 0, draw: 0, lands: 0 };
+
+  let mulligan = 0;
+  let ramp = 0;
+  let draw = 0;
+  let lands = 0;
+
+  for (let run = 0; run < runs; run += 1) {
+    const hand = shuffleCards(library).slice(0, 7);
+    const landCount = hand.filter((card) => card.section === "Terrenos").length;
+    const hasRamp = hand.some((card) => card.section === "Ramp");
+    const hasDraw = hand.some((card) => card.section === "Draw");
+
+    if (landCount < 2 || landCount > 5 || (landCount === 2 && !hasRamp && !hasDraw)) mulligan += 1;
+    if (hasRamp) ramp += 1;
+    if (hasDraw) draw += 1;
+    if (landCount >= 2) lands += 1;
+  }
+
+  return {
+    mulligan: Math.round((mulligan / runs) * 100),
+    ramp: Math.round((ramp / runs) * 100),
+    draw: Math.round((draw / runs) * 100),
+    lands: Math.round((lands / runs) * 100)
+  };
+}
+
 export function DeckBuilderClient() {
   const [activeSection, setActiveSection] = useState(0);
   const [colorMode, setColorMode] = useState<"choose" | "auto">("choose");
@@ -358,12 +633,6 @@ export function DeckBuilderClient() {
   const totalCards = 100;
   const displayedCost = budgetUnlimited ? "Sem limite" : formatMoney(budget);
   const progress = Math.round(((activeSection + 1) / wizardSections.length) * 100);
-  const simulatorStats = {
-    mulligan: Math.max(8, 26 - Math.round(estimatedPower * 1.2)),
-    ramp: selectedArchetypes.includes("Ramp") || activeIdentity.colors.includes("G") ? 78 : 62,
-    draw: activeIdentity.colors.includes("U") ? 74 : 58,
-    lands: budget >= 100000 || budgetUnlimited ? 83 : 76
-  };
 
   function updatePreference(questionId: string, value: string) {
     setPreferences((current) => ({ ...current, [questionId]: value }));
@@ -500,13 +769,13 @@ export function DeckBuilderClient() {
 
             {activeSection === 8 ? (
               <ResultSection
+                activeIdentity={activeIdentity}
                 deckSections={deckSections}
                 explanation={explanation}
                 optimizationFocus={optimizationFocus}
                 setOptimizationFocus={setOptimizationFocus}
                 handTested={handTested}
                 setHandTested={setHandTested}
-                simulatorStats={simulatorStats}
               />
             ) : null}
           </div>
@@ -891,22 +1160,85 @@ function PreferencesSection({
 }
 
 function ResultSection({
+  activeIdentity,
   deckSections,
   explanation,
   optimizationFocus,
   setOptimizationFocus,
   handTested,
-  setHandTested,
-  simulatorStats
+  setHandTested
 }: {
+  activeIdentity: ColorIdentity;
   deckSections: DeckSection[];
   explanation: Array<{ title: string; text: string }>;
   optimizationFocus: string;
   setOptimizationFocus: (value: string) => void;
   handTested: boolean;
   setHandTested: (value: boolean) => void;
-  simulatorStats: { mulligan: number; ramp: number; draw: number; lands: number };
 }) {
+  const [exportStatus, setExportStatus] = useState("");
+  const [openingHand, setOpeningHand] = useState<OpeningHandCard[]>([]);
+  const [simulationStats, setSimulationStats] = useState<DeckSimulationStats | null>(null);
+  const deckList = useMemo(() => buildDeckList(deckSections, activeIdentity), [activeIdentity, deckSections]);
+
+  async function handleExport(option: string) {
+    const slug =
+      option
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "") || "deck";
+
+    if (option === "CSV") {
+      const csv = formatDeckCsv(deckList);
+      downloadTextFile("magic-the-galo-deck.csv", csv, "text/csv;charset=utf-8");
+      const copied = await copyText(csv);
+      setExportStatus(copied ? "CSV baixado e copiado para a area de transferencia." : "CSV baixado.");
+      return;
+    }
+
+    if (option === "PDF") {
+      const opened = openPrintableDeck(deckList, explanation);
+      setExportStatus(opened ? "PDF aberto em modo de impressao. Escolha salvar como PDF." : "O navegador bloqueou a janela do PDF.");
+      return;
+    }
+
+    const deckText = formatDeckText(deckList, option);
+    downloadTextFile(`magic-the-galo-${slug}.txt`, deckText);
+    const copied = await copyText(deckText);
+    setExportStatus(copied ? `${option}: arquivo baixado e lista copiada.` : `${option}: arquivo baixado.`);
+  }
+
+  async function handleSaveAction(action: "save" | "share" | "duplicate") {
+    const deckText = formatDeckText(deckList, "Texto");
+
+    if (action === "save") {
+      localStorage.setItem(
+        "magic-the-galo-deck-builder",
+        JSON.stringify({ savedAt: new Date().toISOString(), deck: deckList })
+      );
+      setExportStatus("Deck salvo neste navegador.");
+      return;
+    }
+
+    if (action === "share") {
+      const copied = await copyText(window.location.href);
+      setExportStatus(copied ? "Link da pagina copiado." : "Nao foi possivel copiar o link automaticamente.");
+      return;
+    }
+
+    downloadTextFile("magic-the-galo-deck-duplicado.txt", deckText);
+    const copied = await copyText(deckText);
+    setExportStatus(copied ? "Deck duplicado em arquivo e copiado." : "Deck duplicado em arquivo.");
+  }
+
+  function handleOpeningHandTest() {
+    setHandTested(true);
+    setSimulationStats(simulateOpeningHands(deckList));
+    setOpeningHand(drawOpeningHand(deckList));
+  }
+
   return (
     <section className="grid gap-6">
       <Panel title="Lista completa" icon={<FileText className="size-5" />}>
@@ -981,7 +1313,12 @@ function ResultSection({
             <h4 className="font-black text-frost">Exportar para</h4>
             <div className="mt-3 flex flex-wrap gap-2">
               {exportOptions.map((option) => (
-                <button key={option} type="button" className="rounded-premium border border-white/10 bg-black/20 px-3 py-2 text-sm font-bold text-mist transition hover:border-gold/40 hover:text-frost">
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => void handleExport(option)}
+                  className="rounded-premium border border-white/10 bg-black/20 px-3 py-2 text-sm font-bold text-mist transition hover:border-gold/40 hover:text-frost"
+                >
                   {option}
                 </button>
               ))}
@@ -990,28 +1327,44 @@ function ResultSection({
           <div>
             <h4 className="font-black text-frost">Salvar e compartilhar</h4>
             <div className="mt-3 flex flex-wrap gap-2">
-              <Button type="button" variant="secondary"><Save className="size-4" /> Salvar na conta</Button>
-              <Button type="button" variant="secondary"><Share2 className="size-4" /> Compartilhar link</Button>
-              <Button type="button" variant="secondary"><Copy className="size-4" /> Duplicar deck</Button>
+              <Button type="button" variant="secondary" onClick={() => void handleSaveAction("save")}><Save className="size-4" /> Salvar na conta</Button>
+              <Button type="button" variant="secondary" onClick={() => void handleSaveAction("share")}><Share2 className="size-4" /> Compartilhar link</Button>
+              <Button type="button" variant="secondary" onClick={() => void handleSaveAction("duplicate")}><Copy className="size-4" /> Duplicar deck</Button>
             </div>
           </div>
         </div>
+        {exportStatus ? <p className="mt-4 text-sm font-bold text-gold">{exportStatus}</p> : null}
       </Panel>
 
       <Panel title="Simulador de mao inicial" icon={<Play className="size-5" />}>
-        <Button type="button" onClick={() => setHandTested(true)}>
+        <Button type="button" onClick={handleOpeningHandTest}>
           <Play className="size-4" />
           Testar Mao Inicial
         </Button>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <Stat label="Chance de mulligan" value={handTested ? `${simulatorStats.mulligan}%` : "--"} />
-          <Stat label="Chance de abrir ramp" value={handTested ? `${simulatorStats.ramp}%` : "--"} />
-          <Stat label="Chance de abrir draw" value={handTested ? `${simulatorStats.draw}%` : "--"} />
-          <Stat label="Chance de abrir terrenos" value={handTested ? `${simulatorStats.lands}%` : "--"} />
+          <Stat label="Chance de mulligan" value={simulationStats ? `${simulationStats.mulligan}%` : "--"} />
+          <Stat label="Chance de abrir ramp" value={simulationStats ? `${simulationStats.ramp}%` : "--"} />
+          <Stat label="Chance de abrir draw" value={simulationStats ? `${simulationStats.draw}%` : "--"} />
+          <Stat label="Chance de abrir terrenos" value={simulationStats ? `${simulationStats.lands}%` : "--"} />
         </div>
-        <p className="mt-3 text-sm leading-6 text-mist">
-          A estrutura ja esta pronta para futuramente rodar milhares de maos reais com base na lista final de 100 cartas.
-        </p>
+        {handTested ? (
+          <div className="mt-5">
+            <h4 className="font-black text-frost">Mao inicial simulada (7 cartas)</h4>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              {openingHand.map((card, index) => (
+                <div key={`${card.name}-${index}`} className="rounded-premium border border-white/10 bg-black/20 p-3">
+                  <span className="text-xs font-bold uppercase text-gold">Carta {index + 1}</span>
+                  <strong className="mt-1 block text-sm text-frost">{card.name}</strong>
+                  <span className="mt-1 block text-xs text-mist">{card.section}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <p className="mt-3 text-sm leading-6 text-mist">
+            Clique para simular uma mao real de 7 cartas usando a lista final de 100 cartas.
+          </p>
+        )}
       </Panel>
     </section>
   );
