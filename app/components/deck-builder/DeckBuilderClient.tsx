@@ -79,6 +79,7 @@ type DeckSimulationStats = {
 };
 
 type ArenaPhase = "closed" | "intro" | "duel";
+type ArenaPlayerPhase = "main" | "combat";
 
 type ArenaPermanent = OpeningHandCard & {
   id: string;
@@ -115,6 +116,7 @@ type ArenaState = {
   botGraveyard: OpeningHandCard[];
   playerDrewThisTurn: boolean;
   playerLandPlayedThisTurn: boolean;
+  playerPhase: ArenaPlayerPhase;
   playerManaSpent: number;
   event?: ArenaEvent;
   log: string[];
@@ -1005,6 +1007,7 @@ function createArenaState(deckList: DeckListEntry[]): ArenaState {
     botGraveyard: [],
     playerDrewThisTurn: false,
     playerLandPlayedThisTurn: false,
+    playerPhase: "main",
     playerManaSpent: 0,
     event: firstEvent,
     log: [
@@ -1175,6 +1178,38 @@ function attackWithBoard(state: ArenaState, owner: "player" | "bot"): ArenaState
   );
 }
 
+function attackWithPermanent(state: ArenaState, owner: "player" | "bot", permanentId: string): ArenaState {
+  const isPlayer = owner === "player";
+  const battlefieldKey = isPlayer ? "playerBattlefield" : "botBattlefield";
+  const battlefield = state[battlefieldKey];
+  const attacker = battlefield.find((card) => card.id === permanentId);
+
+  if (!attacker || attacker.section === "Terrenos") {
+    return addArenaLog(state, "error", owner, `${isPlayer ? "Voce" : "Bot do Galo"} precisa escolher uma criatura para atacar.`);
+  }
+
+  if (attacker.tapped) {
+    return addArenaLog(state, "error", owner, `${attacker.name} ja esta virada e nao pode atacar agora.`, { cardName: attacker.name });
+  }
+
+  const damage = Math.max(1, attacker.power);
+  const lifeKey = isPlayer ? "botLife" : "playerLife";
+  const nextLife = Math.max(0, state[lifeKey] - damage);
+
+  return addArenaLog(
+    {
+      ...state,
+      [battlefieldKey]: battlefield.map((card) => (card.id === permanentId ? { ...card, tapped: true } : card)),
+      [lifeKey]: nextLife,
+      winner: nextLife <= 0 ? owner : state.winner
+    },
+    "attack",
+    owner,
+    `${isPlayer ? "Voce atacou" : "Bot do Galo atacou"} com ${attacker.name}, causando ${damage} de dano.`,
+    { amount: damage, cardName: attacker.name, target: isPlayer ? "bot" : "player" }
+  );
+}
+
 function playFirstLand(state: ArenaState, owner: "player" | "bot"): ArenaState {
   const isPlayer = owner === "player";
   const handKey = isPlayer ? "playerHand" : "botHand";
@@ -1252,6 +1287,7 @@ function startPlayerTurn(state: ArenaState): ArenaState {
     activeTurn: "player" as const,
     playerDrewThisTurn: false,
     playerLandPlayedThisTurn: false,
+    playerPhase: "main" as const,
     playerManaSpent: 0
   };
 
@@ -1271,15 +1307,8 @@ function startPlayerTurn(state: ArenaState): ArenaState {
 }
 
 function runPlayerEndTurn(state: ArenaState): ArenaState {
-  let nextState = addArenaLog(state, "turn", "player", "Voce encerrou o turno. A arena resolve o combate e passa para o bot.");
+  const nextState = addArenaLog(state, "turn", "player", "Voce encerrou o turno. O Bot do Galo assume a prioridade.");
 
-  if (getReadyAttackers(nextState.playerBattlefield).length) {
-    nextState = attackWithBoard(nextState, "player");
-  } else {
-    nextState = addArenaLog(nextState, "turn", "player", "Sem atacantes disponiveis. O turno avanca.");
-  }
-
-  if (nextState.winner) return nextState;
   return {
     ...nextState,
     activeTurn: "bot"
@@ -2106,6 +2135,9 @@ function ResultSection({
   function handleArenaPlayCard(cardIndex: number) {
     setArenaState((current) => {
       if (!current || current.activeTurn !== "player" || current.winner) return current;
+      if (current.playerPhase !== "main") {
+        return addArenaLog(current, "error", "player", "Agora e a fase de combate. Ataque com suas criaturas ou finalize o turno.");
+      }
 
       const card = current.playerHand[cardIndex];
       if (!card) return current;
@@ -2137,15 +2169,34 @@ function ResultSection({
     });
   }
 
-  function handleArenaAttack() {
+  function handleArenaAttack(permanentId: string) {
     setArenaState((current) => {
       if (!current || current.activeTurn !== "player" || current.winner) return current;
-      return attackWithBoard(current, "player");
+      if (current.playerPhase !== "combat") {
+        return addArenaLog(current, "error", "player", "Avance para o combate antes de declarar atacantes.");
+      }
+
+      return attackWithPermanent(current, "player", permanentId);
     });
   }
 
   function handleArenaPass() {
     if (!arenaState || arenaState.activeTurn !== "player" || arenaState.winner || botSequenceActive) return;
+
+    if (arenaState.playerPhase === "main") {
+      setArenaState(
+        addArenaLog(
+          {
+            ...arenaState,
+            playerPhase: "combat"
+          },
+          "turn",
+          "player",
+          "Voce avancou para o combate. Clique em uma criatura desvirada para atacar."
+        )
+      );
+      return;
+    }
 
     const afterPlayerTurn = runPlayerEndTurn(arenaState);
     setArenaState(afterPlayerTurn);
@@ -2269,6 +2320,7 @@ function ResultSection({
             onClose={closeArena}
             onTestAgain={handleOpeningHandTest}
             onPlayCard={handleArenaPlayCard}
+            onAttackPermanent={handleArenaAttack}
             onPass={handleArenaPass}
             botSequenceActive={botSequenceActive}
           />
@@ -2379,6 +2431,7 @@ function ArenaOverlay({
   onClose,
   onTestAgain,
   onPlayCard,
+  onAttackPermanent,
   onPass,
   botSequenceActive
 }: {
@@ -2389,6 +2442,7 @@ function ArenaOverlay({
   onClose: () => void;
   onTestAgain: () => void;
   onPlayCard: (cardIndex: number) => void;
+  onAttackPermanent: (permanentId: string) => void;
   onPass: () => void;
   botSequenceActive: boolean;
 }) {
@@ -2421,6 +2475,7 @@ function ArenaOverlay({
           onClose={onClose}
           onTestAgain={onTestAgain}
           onPlayCard={onPlayCard}
+          onAttackPermanent={onAttackPermanent}
           onPass={onPass}
           botSequenceActive={botSequenceActive}
         />
@@ -2606,6 +2661,7 @@ function ArenaDuel({
   onClose,
   onTestAgain,
   onPlayCard,
+  onAttackPermanent,
   onPass,
   botSequenceActive
 }: {
@@ -2614,6 +2670,7 @@ function ArenaDuel({
   onClose: () => void;
   onTestAgain: () => void;
   onPlayCard: (cardIndex: number) => void;
+  onAttackPermanent: (permanentId: string) => void;
   onPass: () => void;
   botSequenceActive: boolean;
 }) {
@@ -2624,12 +2681,15 @@ function ArenaDuel({
   const playerTotalMana = getManaSources(arena.playerBattlefield);
   const botTotalMana = getManaSources(arena.botBattlefield);
   const isPlayerTurn = arena.activeTurn === "player" && !arena.winner && !botSequenceActive;
+  const isPlayerMain = isPlayerTurn && arena.playerPhase === "main";
+  const isPlayerCombat = isPlayerTurn && arena.playerPhase === "combat";
+  const canPlayFromHand = isPlayerMain;
   const draggingCard = draggingCardIndex === null ? null : arena.playerHand[draggingCardIndex];
 
   function handleBattlefieldDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
     setIsDropReady(false);
-    if (!isPlayerTurn || draggingCardIndex === null) return;
+    if (!canPlayFromHand || draggingCardIndex === null) return;
     onPlayCard(draggingCardIndex);
     setDraggingCardIndex(null);
   }
@@ -2642,6 +2702,7 @@ function ArenaDuel({
             <ArenaBadge label="Voce" value={`${arena.playerLife} vida`} tone="gold" />
             <ArenaBadge label="Bot do Galo" value={`${arena.botLife} vida`} tone="purple" />
             <ArenaBadge label="Turno" value={`${arena.turn} ${isPlayerTurn ? "Sua prioridade" : botSequenceActive ? "Bot jogando" : "Bot pensando"}`} tone="neutral" />
+            <ArenaBadge label="Fase" value={isPlayerCombat ? "Combate" : isPlayerMain ? "Main Phase" : "Resolucao"} tone="gold" />
             <ArenaBadge label="Mana" value={`${playerMana}/${playerTotalMana} disponivel`} tone="neutral" />
             <ArenaBadge label="Leitura" value={arena.winner ? (arena.winner === "player" ? "Voce venceu" : "Bot venceu") : getHandVerdict(stats)} tone="neutral" />
           </div>
@@ -2661,12 +2722,12 @@ function ArenaDuel({
       <div className="grid min-h-0 flex-1 gap-3 xl:grid-cols-[minmax(0,1fr)_270px]">
         <div
           onDragOver={(event) => {
-            if (!isPlayerTurn) return;
+            if (!canPlayFromHand) return;
             event.preventDefault();
             event.dataTransfer.dropEffect = "move";
           }}
           onDragEnter={() => {
-            if (isPlayerTurn) setIsDropReady(true);
+            if (canPlayFromHand) setIsDropReady(true);
           }}
           onDragLeave={(event) => {
             if (event.currentTarget === event.target) setIsDropReady(false);
@@ -2697,6 +2758,7 @@ function ArenaDuel({
             battlefield={arena.botBattlefield}
             graveyard={arena.botGraveyard}
             handCount={arena.botHand.length}
+            focusMode={isPlayerMain ? "dimmed" : isPlayerCombat ? "combatTarget" : "normal"}
             opponent
           />
           <div className="relative z-10 mx-4 py-2 text-center text-xs font-black uppercase tracking-[.28em] text-gold/50">
@@ -2710,6 +2772,9 @@ function ArenaDuel({
             battlefield={arena.playerBattlefield}
             graveyard={arena.playerGraveyard}
             handCount={arena.playerHand.length}
+            focusMode={isPlayerMain ? "mainFocus" : isPlayerCombat ? "combatSource" : "normal"}
+            canAttack={isPlayerCombat}
+            onAttackPermanent={onAttackPermanent}
           />
 
           <div className="absolute bottom-1 left-1/2 z-[70] h-[214px] min-w-[720px] -translate-x-1/2 pointer-events-auto sm:h-[248px] lg:min-w-[780px]">
@@ -2722,7 +2787,7 @@ function ArenaDuel({
                   total={arena.playerHand.length}
                   compact
                   arenaHand
-                  draggable={isPlayerTurn}
+                  draggable={canPlayFromHand}
                   isDragging={draggingCardIndex === index}
                   onDragStart={() => setDraggingCardIndex(index)}
                   onDragEnd={() => {
@@ -2730,7 +2795,7 @@ function ArenaDuel({
                     setIsDropReady(false);
                   }}
                   onPlay={() => {
-                    if (!isPlayerTurn) return;
+                    if (!canPlayFromHand) return;
                     onPlayCard(index);
                   }}
                 />
@@ -2746,7 +2811,7 @@ function ArenaDuel({
               {isPlayerTurn ? "Sua prioridade" : arena.winner ? "Partida encerrada" : botSequenceActive ? "Bot jogando carta por carta" : "Bot resolvendo"}
             </strong>
             <Button type="button" className="mt-3 w-full" disabled={!isPlayerTurn} onClick={onPass}>
-              {botSequenceActive ? "Bot jogando..." : "Finalizar turno"}
+              {botSequenceActive ? "Bot jogando..." : isPlayerCombat ? "Finalizar turno" : "Ir para combate"}
             </Button>
           </div>
           {arena.event ? (
@@ -3095,7 +3160,10 @@ function ArenaZone({
   battlefield,
   graveyard,
   handCount,
-  opponent = false
+  opponent = false,
+  focusMode = "normal",
+  canAttack = false,
+  onAttackPermanent
 }: {
   title: string;
   life: number;
@@ -3105,12 +3173,26 @@ function ArenaZone({
   graveyard: OpeningHandCard[];
   handCount: number;
   opponent?: boolean;
+  focusMode?: "normal" | "dimmed" | "mainFocus" | "combatSource" | "combatTarget";
+  canAttack?: boolean;
+  onAttackPermanent?: (permanentId: string) => void;
 }) {
   const manaCards = battlefield.filter((card) => card.isManaSource);
   const creatureCards = battlefield.filter((card) => !card.isManaSource);
+  const zoneSizeClass = opponent
+    ? focusMode === "combatTarget"
+      ? "min-h-[430px] content-start pt-24"
+      : focusMode === "dimmed"
+        ? "min-h-[210px] content-start pt-20 opacity-45 blur-[1.5px]"
+        : "min-h-[270px] content-start pt-24"
+    : focusMode === "mainFocus"
+      ? "min-h-[520px] content-start pt-7 pb-[224px] sm:pb-[258px]"
+      : focusMode === "combatSource"
+        ? "min-h-[300px] content-start pt-4 pb-[208px] sm:pb-[236px]"
+        : "min-h-[440px] content-start pt-7 pb-[218px] sm:pb-[252px]";
 
   return (
-    <section className={cn("pointer-events-none relative z-10 grid gap-3 p-4", opponent ? "min-h-[270px] content-start pt-24" : "min-h-[440px] content-start pt-7 pb-[218px] sm:pb-[252px]")}>
+    <section className={cn("pointer-events-none relative z-10 grid gap-3 p-4 transition-all duration-700 ease-out", zoneSizeClass)}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-black uppercase tracking-[.22em] text-gold">{title}</h3>
@@ -3128,7 +3210,13 @@ function ArenaZone({
         {!opponent ? (
           <ArenaFieldGroup title="Mana" cards={manaCards} variant="mana" />
         ) : null}
-        <ArenaFieldGroup title={opponent ? "Ameacas" : "Criaturas"} cards={creatureCards} variant="battlefield" />
+        <ArenaFieldGroup
+          title={opponent ? "Ameacas" : "Criaturas"}
+          cards={creatureCards}
+          variant="battlefield"
+          canAttack={canAttack}
+          onAttackPermanent={onAttackPermanent}
+        />
         <div className="grid gap-3">
           {opponent ? <ArenaFieldGroup title="Mana" cards={manaCards} variant="mana" compact /> : null}
           <ArenaGraveyard cards={graveyard} />
@@ -3142,12 +3230,16 @@ function ArenaFieldGroup({
   title,
   cards,
   variant,
-  compact = false
+  compact = false,
+  canAttack = false,
+  onAttackPermanent
 }: {
   title: string;
   cards: ArenaPermanent[];
   variant: "mana" | "battlefield";
   compact?: boolean;
+  canAttack?: boolean;
+  onAttackPermanent?: (permanentId: string) => void;
 }) {
   const limit = compact ? 4 : variant === "mana" ? 8 : 12;
 
@@ -3156,6 +3248,7 @@ function ArenaFieldGroup({
       className={cn(
         "rounded-[8px] bg-black/25 p-3 shadow-[inset_0_0_38px_rgba(0,0,0,.24),0_12px_32px_rgba(0,0,0,.16)]",
         variant === "mana" ? "bg-emerald-950/[.12]" : "bg-gold/[.035]",
+        canAttack && "pointer-events-auto ring-1 ring-gold/25",
         compact ? "min-h-[126px]" : variant === "mana" ? "min-h-[170px]" : "min-h-[190px]"
       )}
     >
@@ -3166,7 +3259,13 @@ function ArenaFieldGroup({
       {cards.length ? (
         <div className={cn("grid gap-2", compact ? "grid-cols-2" : variant === "mana" ? "grid-cols-2" : "grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5")}>
           {cards.slice(0, limit).map((card) => (
-            <ArenaPermanentCard key={card.id} card={card} compact={compact || variant === "mana"} />
+            <ArenaPermanentCard
+              key={card.id}
+              card={card}
+              compact={compact || variant === "mana"}
+              canAttack={canAttack && variant === "battlefield" && card.section !== "Terrenos" && !card.tapped}
+              onAttack={onAttackPermanent}
+            />
           ))}
         </div>
       ) : (
@@ -3234,7 +3333,17 @@ function ArenaCardBackFace({ className }: { className?: string }) {
   );
 }
 
-function ArenaPermanentCard({ card, compact = false }: { card: ArenaPermanent; compact?: boolean }) {
+function ArenaPermanentCard({
+  card,
+  compact = false,
+  canAttack = false,
+  onAttack
+}: {
+  card: ArenaPermanent;
+  compact?: boolean;
+  canAttack?: boolean;
+  onAttack?: (permanentId: string) => void;
+}) {
   const [cardImage, setCardImage] = useState<string | null | undefined>(() => cardImageCache.get(card.name));
   const theme = getOpeningHandTheme(card.section);
 
@@ -3262,11 +3371,17 @@ function ArenaPermanentCard({ card, compact = false }: { card: ArenaPermanent; c
   }, [card.name]);
 
   return (
-    <div
+    <button
+      type="button"
+      disabled={!canAttack}
+      onClick={() => {
+        if (canAttack) onAttack?.(card.id);
+      }}
       className={cn(
-        "group relative rounded-[7px] border p-1 transition duration-500 ease-out",
+        "group relative rounded-[7px] border p-1 text-left transition duration-500 ease-out disabled:cursor-default",
         compact ? "min-h-[104px]" : "min-h-[126px]",
-        card.tapped ? "border-gold/26 bg-gold/10 opacity-85" : "border-transparent bg-black/25"
+        card.tapped ? "border-gold/26 bg-gold/10 opacity-85" : "border-transparent bg-black/25",
+        canAttack && "cursor-crosshair border-gold/45 bg-gold/10 shadow-[0_0_26px_rgba(215,180,106,.18)] hover:-translate-y-1 hover:border-gold/80"
       )}
     >
       <div
@@ -3298,12 +3413,17 @@ function ArenaPermanentCard({ card, compact = false }: { card: ArenaPermanent; c
           Virada
         </span>
       ) : null}
+      {canAttack ? (
+        <span className="absolute left-1 top-1 rounded-full bg-red-500 px-1.5 py-0.5 text-[9px] font-black uppercase text-white shadow-[0_0_16px_rgba(239,68,68,.42)]">
+          Atacar
+        </span>
+      ) : null}
       {card.section !== "Terrenos" ? (
         <span className="absolute right-1 top-1 rounded-full bg-black/70 px-1.5 py-0.5 text-[10px] font-black text-gold">
           {card.power}/{card.toughness}
         </span>
       ) : null}
-    </div>
+    </button>
   );
 }
 
