@@ -19,7 +19,7 @@ import {
   X
 } from "lucide-react";
 import type { DragEvent, ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import {
@@ -1204,28 +1204,45 @@ function playLandAt(state: ArenaState, owner: "player" | "bot", cardIndex: numbe
   );
 }
 
-function runBotTurn(state: ArenaState): ArenaState {
+function buildBotTurnTimeline(state: ArenaState) {
+  const timeline: ArenaState[] = [];
   let nextState: ArenaState = {
     ...untapArenaPermanents(state, "bot"),
     activeTurn: "bot",
   };
   nextState = addArenaLog(nextState, "turn", "bot", "Turno do Bot do Galo. Permanentes do bot foram desviradas.");
+  timeline.push(nextState);
 
   const drawResult = drawArenaCard(nextState, "bot");
   nextState = addArenaLog(drawResult.state, "draw", "bot", drawResult.drawn ? "Bot do Galo comprou uma carta." : "Bot do Galo nao conseguiu comprar.");
-  if (nextState.winner) return nextState;
+  timeline.push(nextState);
+  if (nextState.winner) return timeline;
 
+  const beforeLandEventId = nextState.event?.id;
   nextState = playFirstLand(nextState, "bot");
+  if (nextState.event?.id !== beforeLandEventId) timeline.push(nextState);
 
   const botMana = getAvailableManaSources(nextState.botBattlefield);
   const castIndex = nextState.botHand.findIndex((card) => card.section !== "Terrenos" && getArenaCardCost(card) <= botMana);
-  if (castIndex >= 0) nextState = castArenaCard(nextState, "bot", castIndex);
-  if (nextState.winner) return nextState;
+  if (castIndex >= 0) {
+    nextState = castArenaCard(nextState, "bot", castIndex);
+    timeline.push(nextState);
+  }
+  if (nextState.winner) return timeline;
 
-  if (nextState.turn > 1 && getReadyAttackers(nextState.botBattlefield).length) nextState = attackWithBoard(nextState, "bot");
-  if (nextState.winner) return nextState;
+  if (nextState.turn > 1 && getReadyAttackers(nextState.botBattlefield).length) {
+    nextState = attackWithBoard(nextState, "bot");
+    timeline.push(nextState);
+  }
+  if (nextState.winner) return timeline;
 
-  return startPlayerTurn(nextState);
+  timeline.push(startPlayerTurn(nextState));
+  return timeline;
+}
+
+function runBotTurn(state: ArenaState): ArenaState {
+  const timeline = buildBotTurnTimeline(state);
+  return timeline[timeline.length - 1] ?? state;
 }
 
 function startPlayerTurn(state: ArenaState): ArenaState {
@@ -1263,7 +1280,10 @@ function runPlayerEndTurn(state: ArenaState): ArenaState {
   }
 
   if (nextState.winner) return nextState;
-  return runBotTurn(nextState);
+  return {
+    ...nextState,
+    activeTurn: "bot"
+  };
 }
 
 export function DeckBuilderClient() {
@@ -1921,6 +1941,8 @@ function ResultSection({
   const [simulationStats, setSimulationStats] = useState<DeckSimulationStats | null>(null);
   const [arenaPhase, setArenaPhase] = useState<ArenaPhase>("closed");
   const [arenaState, setArenaState] = useState<ArenaState | null>(null);
+  const [botSequenceActive, setBotSequenceActive] = useState(false);
+  const botSequenceTimers = useRef<number[]>([]);
   const deckList = useMemo(() => buildDeckList(deckSections, activeIdentity), [activeIdentity, deckSections]);
 
   useEffect(() => {
@@ -1928,6 +1950,38 @@ function ResultSection({
     const timer = window.setTimeout(() => setArenaPhase("duel"), 3200);
     return () => window.clearTimeout(timer);
   }, [arenaPhase]);
+
+  useEffect(() => () => clearBotSequenceTimers(), []);
+
+  function clearBotSequenceTimers() {
+    botSequenceTimers.current.forEach((timer) => window.clearTimeout(timer));
+    botSequenceTimers.current = [];
+  }
+
+  function playBotTimeline(timeline: ArenaState[]) {
+    clearBotSequenceTimers();
+
+    if (!timeline.length) {
+      setBotSequenceActive(false);
+      return;
+    }
+
+    setBotSequenceActive(true);
+    timeline.forEach((state, index) => {
+      const timer = window.setTimeout(
+        () => {
+          setArenaState(state);
+          if (index === timeline.length - 1) {
+            botSequenceTimers.current = [];
+            setBotSequenceActive(false);
+          }
+        },
+        700 + index * 1050
+      );
+
+      botSequenceTimers.current.push(timer);
+    });
+  }
 
   async function handleExport(option: string) {
     const slug =
@@ -1982,6 +2036,8 @@ function ResultSection({
   }
 
   function handleOpeningHandTest() {
+    clearBotSequenceTimers();
+    setBotSequenceActive(false);
     const nextArena = createArenaState(deckList);
     setHandTested(true);
     setSimulationStats(simulateOpeningHands(deckList));
@@ -1991,6 +2047,8 @@ function ResultSection({
   }
 
   function closeArena() {
+    clearBotSequenceTimers();
+    setBotSequenceActive(false);
     setArenaPhase("closed");
   }
 
@@ -2087,10 +2145,11 @@ function ResultSection({
   }
 
   function handleArenaPass() {
-    setArenaState((current) => {
-      if (!current || current.activeTurn !== "player" || current.winner) return current;
-      return runPlayerEndTurn(current);
-    });
+    if (!arenaState || arenaState.activeTurn !== "player" || arenaState.winner || botSequenceActive) return;
+
+    const afterPlayerTurn = runPlayerEndTurn(arenaState);
+    setArenaState(afterPlayerTurn);
+    if (!afterPlayerTurn.winner) playBotTimeline(buildBotTurnTimeline(afterPlayerTurn));
   }
 
   return (
@@ -2211,6 +2270,7 @@ function ResultSection({
             onTestAgain={handleOpeningHandTest}
             onPlayCard={handleArenaPlayCard}
             onPass={handleArenaPass}
+            botSequenceActive={botSequenceActive}
           />
         ) : null}
       </Panel>
@@ -2319,7 +2379,8 @@ function ArenaOverlay({
   onClose,
   onTestAgain,
   onPlayCard,
-  onPass
+  onPass,
+  botSequenceActive
 }: {
   phase: ArenaPhase;
   arena: ArenaState;
@@ -2329,6 +2390,7 @@ function ArenaOverlay({
   onTestAgain: () => void;
   onPlayCard: (cardIndex: number) => void;
   onPass: () => void;
+  botSequenceActive: boolean;
 }) {
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -2360,6 +2422,7 @@ function ArenaOverlay({
           onTestAgain={onTestAgain}
           onPlayCard={onPlayCard}
           onPass={onPass}
+          botSequenceActive={botSequenceActive}
         />
       )}
     </div>
@@ -2480,6 +2543,20 @@ function ArenaStyles() {
           72% { opacity: 1; transform: translateX(0) translateY(0) rotate(0deg) scale(1); filter: blur(0); }
           100% { opacity: 0; transform: translateX(26px) translateY(-10px) rotate(-3deg) scale(.96); filter: blur(3px); }
         }
+
+        @keyframes arenaBotCardPlay {
+          0% { opacity: 0; transform: translate(360px, -205px) rotate(-18deg) scale(.48); filter: blur(8px); }
+          18% { opacity: 1; transform: translate(230px, -155px) rotate(-10deg) scale(.74); filter: blur(0); }
+          58% { opacity: 1; transform: translate(-50%, -50%) rotate(2deg) scale(1); filter: blur(0); }
+          100% { opacity: 0; transform: translate(-50%, -42%) rotate(0deg) scale(.92); filter: blur(3px); }
+        }
+
+        @keyframes arenaBotDrawCard {
+          0% { opacity: 0; transform: translate(-210px, -220px) rotate(-10deg) scale(.42); filter: blur(8px); }
+          18% { opacity: 1; filter: blur(0); }
+          72% { opacity: 1; transform: translate(370px, -205px) rotate(17deg) scale(.72); filter: blur(0); }
+          100% { opacity: 0; transform: translate(420px, -215px) rotate(20deg) scale(.62); filter: blur(4px); }
+        }
       `}
     </style>
   );
@@ -2529,7 +2606,8 @@ function ArenaDuel({
   onClose,
   onTestAgain,
   onPlayCard,
-  onPass
+  onPass,
+  botSequenceActive
 }: {
   arena: ArenaState;
   stats: DeckSimulationStats | null;
@@ -2537,6 +2615,7 @@ function ArenaDuel({
   onTestAgain: () => void;
   onPlayCard: (cardIndex: number) => void;
   onPass: () => void;
+  botSequenceActive: boolean;
 }) {
   const [draggingCardIndex, setDraggingCardIndex] = useState<number | null>(null);
   const [isDropReady, setIsDropReady] = useState(false);
@@ -2544,7 +2623,7 @@ function ArenaDuel({
   const botMana = getAvailableManaSources(arena.botBattlefield);
   const playerTotalMana = getManaSources(arena.playerBattlefield);
   const botTotalMana = getManaSources(arena.botBattlefield);
-  const isPlayerTurn = arena.activeTurn === "player" && !arena.winner;
+  const isPlayerTurn = arena.activeTurn === "player" && !arena.winner && !botSequenceActive;
   const draggingCard = draggingCardIndex === null ? null : arena.playerHand[draggingCardIndex];
 
   function handleBattlefieldDrop(event: DragEvent<HTMLDivElement>) {
@@ -2562,7 +2641,7 @@ function ArenaDuel({
           <div className="flex flex-wrap items-center gap-3">
             <ArenaBadge label="Voce" value={`${arena.playerLife} vida`} tone="gold" />
             <ArenaBadge label="Bot do Galo" value={`${arena.botLife} vida`} tone="purple" />
-            <ArenaBadge label="Turno" value={`${arena.turn} ${arena.activeTurn === "player" ? "Sua prioridade" : "Bot pensando"}`} tone="neutral" />
+            <ArenaBadge label="Turno" value={`${arena.turn} ${isPlayerTurn ? "Sua prioridade" : botSequenceActive ? "Bot jogando" : "Bot pensando"}`} tone="neutral" />
             <ArenaBadge label="Mana" value={`${playerMana}/${playerTotalMana} disponivel`} tone="neutral" />
             <ArenaBadge label="Leitura" value={arena.winner ? (arena.winner === "player" ? "Voce venceu" : "Bot venceu") : getHandVerdict(stats)} tone="neutral" />
           </div>
@@ -2602,6 +2681,7 @@ function ArenaDuel({
           <ArenaHeroMarker side="bot" name="Bot do Galo" life={arena.botLife} libraryCount={arena.botLibrary.length} event={arena.event} />
           <ArenaHeroMarker side="player" name="Voce" life={arena.playerLife} libraryCount={arena.playerLibrary.length} event={arena.event} />
           <ArenaCombatAnimation event={arena.event} />
+          <ArenaBotCardFlight event={arena.event} />
           <ArenaEventSpotlight event={arena.event} />
           <ArenaCardReveal event={arena.event} />
           {draggingCard ? (
@@ -2663,10 +2743,10 @@ function ArenaDuel({
           <div className="rounded-[7px] border border-gold/8 bg-black/25 p-3">
             <span className="text-[10px] font-black uppercase tracking-[.2em] text-mist">Fluxo automatico</span>
             <strong className="mt-2 block text-sm text-frost">
-              {isPlayerTurn ? "Sua prioridade" : arena.winner ? "Partida encerrada" : "Bot resolvendo"}
+              {isPlayerTurn ? "Sua prioridade" : arena.winner ? "Partida encerrada" : botSequenceActive ? "Bot jogando carta por carta" : "Bot resolvendo"}
             </strong>
             <Button type="button" className="mt-3 w-full" disabled={!isPlayerTurn} onClick={onPass}>
-              Finalizar turno
+              {botSequenceActive ? "Bot jogando..." : "Finalizar turno"}
             </Button>
           </div>
           {arena.event ? (
@@ -2717,8 +2797,14 @@ function ArenaBadge({ label, value, tone }: { label: string; value: string; tone
 function ArenaBoardDecor() {
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_42%,rgba(215,180,106,.08),transparent_30%),radial-gradient(circle_at_16%_22%,rgba(56,138,179,.1),transparent_18%),radial-gradient(circle_at_86%_78%,rgba(232,122,38,.08),transparent_20%)]" />
-      <div className="absolute inset-x-8 top-[42%] h-28 rounded-full bg-gold/[.025] blur-3xl" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_42%,rgba(215,180,106,.12),transparent_30%),radial-gradient(circle_at_16%_22%,rgba(56,138,179,.1),transparent_18%),radial-gradient(circle_at_86%_78%,rgba(232,122,38,.08),transparent_20%)]" />
+      <div className="absolute left-1/2 top-[43%] size-[310px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-gold/14 bg-black/10 shadow-[inset_0_0_70px_rgba(215,180,106,.06),0_0_70px_rgba(215,180,106,.08)]" />
+      <img
+        src="/images/magic-the-galo-rooster-gold.png"
+        alt=""
+        className="absolute left-1/2 top-[43%] h-36 w-36 -translate-x-1/2 -translate-y-1/2 object-contain opacity-80 drop-shadow-[0_0_34px_rgba(215,180,106,.42)]"
+      />
+      <div className="absolute inset-x-8 top-[42%] h-28 rounded-full bg-gold/[.035] blur-3xl" />
       <div className="absolute left-8 top-8 size-36 rounded-full bg-cyan-400/[.035] blur-2xl" />
       <div className="absolute bottom-8 right-8 size-44 rounded-full bg-orange-400/[.035] blur-2xl" />
     </div>
@@ -2767,7 +2853,11 @@ function ArenaHeroMarker({
                 : undefined
           }
         >
-          {isPlayer ? <span className="text-xl font-black text-gold">MTG</span> : <Bot className="size-9 text-purple-200" />}
+          {isPlayer ? (
+            <img src="/images/magic-the-galo-rooster-gold.png" alt="" className="size-12 object-contain drop-shadow-[0_0_18px_rgba(215,180,106,.42)]" />
+          ) : (
+            <img src="/images/magic-the-galo-rooster-gold.png" alt="" className="size-12 object-contain drop-shadow-[0_0_18px_rgba(215,180,106,.42)]" />
+          )}
         </div>
         <div className="-mt-4 rounded-full border border-gold/35 bg-black/80 px-4 py-1 text-2xl font-black text-frost shadow-[0_0_24px_rgba(215,180,106,.18)]">
           {life}
@@ -2784,9 +2874,10 @@ function ArenaDeckPile({ count }: { count: number }) {
     <div className="relative h-24 w-16">
       <div className="absolute inset-0 translate-x-2 -translate-y-2 rounded-[7px] border border-black bg-[#201614]" />
       <div className="absolute inset-0 translate-x-1 -translate-y-1 rounded-[7px] border border-black bg-[#2a1a14]" />
-      <div className="absolute inset-0 grid place-items-center rounded-[7px] border-2 border-black bg-[radial-gradient(circle_at_50%_38%,rgba(215,180,106,.46),transparent_26%),linear-gradient(145deg,#1c1f2b,#07080d)] text-[10px] font-black uppercase tracking-[.14em] text-gold shadow-[0_16px_28px_rgba(0,0,0,.45)]">
+      <ArenaCardBackFace className="absolute inset-0" />
+      <span className="absolute -right-2 -bottom-2 grid size-7 place-items-center rounded-full border border-gold/45 bg-black/85 text-[10px] font-black text-gold shadow-[0_0_20px_rgba(215,180,106,.22)]">
         {count}
-      </div>
+      </span>
     </div>
   );
 }
@@ -2835,6 +2926,73 @@ function ArenaCombatAnimation({ event }: { event?: ArenaEvent }) {
         </span>
         <strong className="mt-1 block text-3xl font-black text-frost">{event.kind === "attack" ? "ATAQUE" : "DANO"}</strong>
       </div>
+    </div>
+  );
+}
+
+function ArenaBotCardFlight({ event }: { event?: ArenaEvent }) {
+  if (!event || event.actor !== "bot") return null;
+  if (event.kind !== "draw" && event.kind !== "mana" && event.kind !== "cast") return null;
+
+  const isDraw = event.kind === "draw";
+
+  return (
+    <div
+      key={event.id}
+      className="pointer-events-none absolute left-1/2 top-1/2 z-[68]"
+      style={{ animation: `${isDraw ? "arenaBotDrawCard" : "arenaBotCardPlay"} 1350ms ease-out both` }}
+    >
+      {isDraw || !event.cardName ? (
+        <ArenaCardBackFace className="h-40 w-28" />
+      ) : (
+        <ArenaFlyingCard name={event.cardName} />
+      )}
+    </div>
+  );
+}
+
+function ArenaFlyingCard({ name }: { name: string }) {
+  const [cardImage, setCardImage] = useState<string | null | undefined>(() => cardImageCache.get(name));
+
+  useEffect(() => {
+    let cancelled = false;
+    const cached = cardImageCache.get(name);
+
+    if (cached !== undefined) {
+      setCardImage(cached);
+      return;
+    }
+
+    setCardImage(undefined);
+    fetchScryfallCardImage(name)
+      .then((imageUrl) => {
+        cardImageCache.set(name, imageUrl);
+        if (!cancelled) setCardImage(imageUrl);
+      })
+      .catch(() => {
+        cardImageCache.set(name, null);
+        if (!cancelled) setCardImage(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [name]);
+
+  if (cardImage) {
+    return (
+      <img
+        src={cardImage}
+        alt={name}
+        className="h-52 w-36 rounded-[10px] object-contain shadow-[0_24px_70px_rgba(0,0,0,.75),0_0_30px_rgba(215,180,106,.32)]"
+        referrerPolicy="no-referrer"
+      />
+    );
+  }
+
+  return (
+    <div className="grid h-52 w-36 place-items-center rounded-[10px] border border-gold/45 bg-black/80 p-3 text-center text-xs font-black text-gold shadow-[0_24px_70px_rgba(0,0,0,.75),0_0_30px_rgba(215,180,106,.24)]">
+      {cardImage === undefined ? "Buscando carta" : name}
     </div>
   );
 }
@@ -3049,11 +3207,28 @@ function ArenaGraveyard({ cards }: { cards: OpeningHandCard[] }) {
 function CardBack({ index }: { index: number }) {
   return (
     <div
-      className="h-20 w-14 rounded-[6px] border-2 border-black bg-[radial-gradient(circle_at_50%_35%,rgba(215,180,106,.55),transparent_28%),linear-gradient(145deg,#171923,#05060a)] shadow-[0_8px_20px_rgba(0,0,0,.45)]"
+      className="h-20 w-14 shadow-[0_8px_20px_rgba(0,0,0,.45)]"
       style={{ transform: `rotate(${(index - 3) * 4}deg)` }}
     >
-      <div className="grid h-full place-items-center rounded-[4px] border border-gold/30 text-[9px] font-black uppercase tracking-[.16em] text-gold">
-        MTG
+      <ArenaCardBackFace className="h-full w-full" />
+    </div>
+  );
+}
+
+function ArenaCardBackFace({ className }: { className?: string }) {
+  return (
+    <div
+      className={cn(
+        "grid place-items-center overflow-hidden rounded-[7px] border border-gold/55 bg-[radial-gradient(circle_at_50%_38%,rgba(215,180,106,.2),transparent_30%),linear-gradient(145deg,#141315,#030405)] shadow-[inset_0_0_0_1px_rgba(0,0,0,.7),inset_0_0_38px_rgba(215,180,106,.08),0_16px_36px_rgba(0,0,0,.45)]",
+        className
+      )}
+    >
+      <div className="grid h-[88%] w-[84%] place-items-center rounded-[5px] border border-gold/20 bg-[radial-gradient(circle_at_50%_42%,rgba(215,180,106,.14),transparent_36%)]">
+        <img
+          src="/images/magic-the-galo-rooster-gold.png"
+          alt=""
+          className="h-[62%] w-[62%] object-contain drop-shadow-[0_0_18px_rgba(215,180,106,.5)]"
+        />
       </div>
     </div>
   );
