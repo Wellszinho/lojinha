@@ -127,6 +127,18 @@ type ScryfallCardResponse = {
   }>;
 };
 
+type ScryfallCommanderCard = {
+  name: string;
+  color_identity?: ManaColor[];
+  edhrec_rank?: number | null;
+  released_at?: string | null;
+  oracle_text?: string;
+  type_line?: string;
+  prices?: {
+    usd?: string | null;
+  };
+};
+
 const wizardSections = [
   { title: "Identidade de cores", description: "Escolha as cores ou deixe a IA sugerir com base no plano do deck." },
   { title: "Orcamento", description: "Defina quanto o deck pode custar e se existe teto real de investimento." },
@@ -286,6 +298,77 @@ function sortCommanders(commanders: CommanderProfile[], filter: CommanderFilterI
     if (filter === "old") return left.releaseYear - right.releaseYear;
     return right.power - left.power || left.complexity - right.complexity;
   });
+}
+
+function normalizeCommanderSearch(search: string) {
+  const normalized = search
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+
+  if (normalized.includes("asceta sem idade")) return "oloro";
+  return normalized;
+}
+
+function mergeCommanderPools(localCommanders: CommanderProfile[], remoteCommanders: CommanderProfile[]) {
+  const merged = new Map<string, CommanderProfile>();
+  remoteCommanders.forEach((commander) => merged.set(commander.name.toLowerCase(), commander));
+  localCommanders.forEach((commander) => merged.set(commander.name.toLowerCase(), commander));
+  return Array.from(merged.values());
+}
+
+function inferCommanderArchetypes(card: ScryfallCommanderCard) {
+  const text = `${card.oracle_text ?? ""} ${card.type_line ?? ""}`.toLowerCase();
+  const archetypes: string[] = [];
+
+  if (text.includes("life")) archetypes.push("Lifegain");
+  if (text.includes("token")) archetypes.push("Tokens");
+  if (text.includes("artifact")) archetypes.push("Artifacts");
+  if (text.includes("equipment") || text.includes("aura")) archetypes.push("Voltron");
+  if (text.includes("graveyard") || text.includes("return") || text.includes("reanimate")) archetypes.push("Reanimator");
+  if (text.includes("instant") || text.includes("sorcery")) archetypes.push("Spellslinger");
+  if (text.includes("draw")) archetypes.push("Draw");
+  if (text.includes("counter")) archetypes.push("Counters");
+  if (text.includes("land")) archetypes.push("Landfall");
+  if (!archetypes.length) archetypes.push("Value");
+
+  return archetypes.slice(0, 4);
+}
+
+function mapScryfallCommander(card: ScryfallCommanderCard): CommanderProfile | null {
+  if (!card.name) return null;
+
+  const identity = (card.color_identity?.filter((color): color is ManaColor => ["W", "U", "B", "R", "G", "C"].includes(color)) ?? []) as ManaColor[];
+  const colors = identity.length ? identity : (["C"] as ManaColor[]);
+  const rank = card.edhrec_rank ?? 999999;
+  const price = Number.parseFloat(card.prices?.usd ?? "0");
+  const releaseYear = Number.parseInt(card.released_at?.slice(0, 4) ?? "2010", 10);
+  const archetypes = inferCommanderArchetypes(card);
+  const oracle = card.oracle_text?.replace(/\s+/g, " ").trim();
+  const tags: CommanderProfile["tags"] = ["fun"];
+
+  if (rank <= 2000) tags.push("popular");
+  if (rank <= 4500) tags.push("strong");
+  if (rank <= 8000) tags.push("competitive");
+  if (price > 0 && price <= 3) tags.push("budget");
+  if (releaseYear >= 2024) tags.push("recent");
+  if (releaseYear <= 2015) tags.push("old");
+  if (archetypes.some((item) => ["Combo", "Spellslinger", "Reanimator"].includes(item))) tags.push("hard");
+  else tags.push("easy");
+
+  return {
+    name: card.name,
+    identity: colors,
+    colorCode: colors.join(""),
+    archetypes,
+    tags: Array.from(new Set(tags)),
+    priceTier: price >= 10 ? "caro" : price >= 3 ? "medio" : "barato",
+    power: rank <= 2000 ? 8 : rank <= 8000 ? 7 : 6,
+    complexity: tags.includes("hard") ? 7 : colors.length >= 3 ? 6 : 4,
+    releaseYear,
+    summary: oracle ? oracle.slice(0, 150) : "Comandante encontrado na Scryfall e compativel com a identidade escolhida."
+  };
 }
 
 function commanderContainsColors(identity: ColorIdentity, commander: CommanderProfile) {
@@ -1137,6 +1220,8 @@ export function DeckBuilderClient() {
   const [preferences, setPreferences] = useState<Record<string, string>>(initialPreferences);
   const [optimizationFocus, setOptimizationFocus] = useState("Mais consistente");
   const [handTested, setHandTested] = useState(false);
+  const [remoteCommanders, setRemoteCommanders] = useState<CommanderProfile[]>([]);
+  const [commanderSearchStatus, setCommanderSearchStatus] = useState<"idle" | "loading" | "error">("idle");
 
   const suggestedIdentity = useMemo(
     () => suggestColorIdentity(selectedArchetypes, selectedStyles),
@@ -1144,17 +1229,49 @@ export function DeckBuilderClient() {
   );
 
   const activeIdentity = colorMode === "auto" ? suggestedIdentity : getColorIdentityById(selectedIdentityId);
+  const commanderCandidates = useMemo(() => mergeCommanderPools(commanderPool, remoteCommanders), [remoteCommanders]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => {
+      setCommanderSearchStatus("loading");
+      const params = new URLSearchParams({
+        identity: activeIdentity.code,
+        search: commanderSearch
+      });
+
+      fetch(`/api/commanders?${params.toString()}`, { signal: controller.signal })
+        .then((response) => response.json())
+        .then((payload: { data?: ScryfallCommanderCard[] }) => {
+          const mapped = (payload.data ?? [])
+            .map(mapScryfallCommander)
+            .filter((commander): commander is CommanderProfile => Boolean(commander));
+          setRemoteCommanders(mapped);
+          setCommanderSearchStatus("idle");
+        })
+        .catch((error) => {
+          if (error.name === "AbortError") return;
+          setRemoteCommanders([]);
+          setCommanderSearchStatus("error");
+        });
+    }, 300);
+
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [activeIdentity.code, commanderSearch]);
 
   const compatibleCommanders = useMemo(() => {
-    const search = commanderSearch.trim().toLowerCase();
-    const pool = commanderPool.filter((commander) => commanderContainsColors(activeIdentity, commander));
+    const search = normalizeCommanderSearch(commanderSearch);
+    const pool = commanderCandidates.filter((commander) => commanderContainsColors(activeIdentity, commander));
     const searched = search ? pool.filter((commander) => commander.name.toLowerCase().includes(search)) : pool;
     return sortCommanders(searched, activeCommanderFilter);
-  }, [activeCommanderFilter, activeIdentity, commanderSearch]);
+  }, [activeCommanderFilter, activeIdentity, commanderCandidates, commanderSearch]);
 
   const selectedCommander = useMemo(
-    () => commanderPool.find((commander) => commander.name === selectedCommanderName),
-    [selectedCommanderName]
+    () => commanderCandidates.find((commander) => commander.name === selectedCommanderName),
+    [commanderCandidates, selectedCommanderName]
   );
 
   const recommendedCommander = compatibleCommanders[0];
@@ -1278,6 +1395,7 @@ export function DeckBuilderClient() {
                 setCommanderSearch={setCommanderSearch}
                 compatibleCommanders={compatibleCommanders}
                 displayCommander={displayCommander}
+                commanderSearchStatus={commanderSearchStatus}
                 setSelectedCommanderName={setSelectedCommanderName}
                 surpriseMe={surpriseMe}
               />
@@ -1565,6 +1683,7 @@ function CommanderSection({
   setCommanderSearch,
   compatibleCommanders,
   displayCommander,
+  commanderSearchStatus,
   setSelectedCommanderName,
   surpriseMe
 }: {
@@ -1575,6 +1694,7 @@ function CommanderSection({
   setCommanderSearch: (value: string) => void;
   compatibleCommanders: CommanderProfile[];
   displayCommander: CommanderProfile | undefined;
+  commanderSearchStatus: "idle" | "loading" | "error";
   setSelectedCommanderName: (value: string) => void;
   surpriseMe: () => void;
 }) {
@@ -1587,6 +1707,13 @@ function CommanderSection({
             <strong className="text-frost">{activeIdentity.name}</strong>
             <ManaPips colors={activeIdentity.colors} />
           </div>
+          <p className="mt-2 text-xs text-mist">
+            {commanderSearchStatus === "loading"
+              ? "Buscando comandantes na Scryfall..."
+              : commanderSearchStatus === "error"
+                ? "Busca viva indisponivel agora; exibindo base local."
+                : "Base local combinada com busca viva da Scryfall."}
+          </p>
         </div>
         <Button type="button" variant="secondary" onClick={surpriseMe}>
           <Shuffle className="size-4" />
@@ -1600,7 +1727,7 @@ function CommanderSection({
           <input
             value={commanderSearch}
             onChange={(event) => setCommanderSearch(event.target.value)}
-            placeholder="Buscar comandante por nome"
+            placeholder="Buscar comandante por nome, ex: Oloro"
             className="w-full bg-transparent text-sm text-frost outline-none placeholder:text-mist"
           />
         </label>
@@ -1625,7 +1752,7 @@ function CommanderSection({
       </div>
 
       <div className="grid gap-3 md:grid-cols-2">
-        {compatibleCommanders.map((commander) => (
+        {compatibleCommanders.length ? compatibleCommanders.map((commander) => (
           <button
             key={commander.name}
             type="button"
@@ -1649,7 +1776,11 @@ function CommanderSection({
               <span className="rounded-full bg-white/10 px-2 py-1 text-mist">{commander.priceTier}</span>
             </span>
           </button>
-        ))}
+        )) : (
+          <div className="rounded-premium border border-gold/15 bg-black/20 p-4 text-sm text-mist md:col-span-2">
+            Nenhum comandante encontrado para essa busca. Tente apenas parte do nome, como "Oloro".
+          </div>
+        )}
       </div>
     </section>
   );
@@ -1824,8 +1955,18 @@ function ResultSection({
     setArenaState((current) => {
       if (!current || current.activeTurn !== "player" || current.winner) return current;
       const availableMana = getAvailableManaSources(current.playerBattlefield);
+      const totalMana = getManaSources(current.playerBattlefield);
       const cardIndex = current.playerHand.findIndex((card) => card.section !== "Terrenos" && getArenaCardCost(card) <= availableMana);
-      if (cardIndex < 0) return addArenaLog(current, "error", "player", `Mana disponivel: ${Math.max(0, availableMana)}. Nenhuma magica pode ser conjurada agora.`);
+      if (cardIndex < 0) {
+        return addArenaLog(
+          current,
+          "error",
+          "player",
+          totalMana > availableMana
+            ? `Mana disponivel: ${Math.max(0, availableMana)}. Algumas fontes estao viradas; finalize o turno para desvirar.`
+            : `Mana disponivel: ${Math.max(0, availableMana)}. Nenhuma magica pode ser conjurada agora.`
+        );
+      }
 
       return castArenaCard(current, "player", cardIndex);
     });
@@ -1847,13 +1988,16 @@ function ResultSection({
       }
 
       const availableMana = getAvailableManaSources(current.playerBattlefield);
+      const totalMana = getManaSources(current.playerBattlefield);
       const cost = getArenaCardCost(card);
       if (cost > availableMana) {
         return addArenaLog(
           current,
           "error",
           "player",
-          `${card.name} custa ${cost}. Voce tem ${Math.max(0, availableMana)} mana disponivel.`,
+          cost <= totalMana
+            ? `${card.name} custa ${cost}, mas suas fontes de mana disponiveis estao viradas. Finalize o turno para desvirar.`
+            : `${card.name} custa ${cost}. Voce tem ${Math.max(0, availableMana)} mana disponivel.`,
           { cardName: card.name }
         );
       }
@@ -2172,21 +2316,41 @@ function ArenaStyles() {
         }
 
         @keyframes arenaAttackPlayer {
-          0% { opacity: 0; transform: translate(-50%, 140%) scaleY(.3); }
-          24% { opacity: 1; }
-          100% { opacity: 0; transform: translate(-50%, -120%) scaleY(1); }
+          0% { opacity: 0; transform: translate(-50%, 145%) scaleY(.24) rotate(-8deg); }
+          18% { opacity: 1; }
+          72% { opacity: 1; }
+          100% { opacity: 0; transform: translate(-50%, -130%) scaleY(1.08) rotate(-8deg); }
         }
 
         @keyframes arenaAttackBot {
-          0% { opacity: 0; transform: translate(-50%, -120%) scaleY(.3); }
-          24% { opacity: 1; }
-          100% { opacity: 0; transform: translate(-50%, 140%) scaleY(1); }
+          0% { opacity: 0; transform: translate(-50%, -130%) scaleY(.24) rotate(8deg); }
+          18% { opacity: 1; }
+          72% { opacity: 1; }
+          100% { opacity: 0; transform: translate(-50%, 145%) scaleY(1.08) rotate(8deg); }
         }
 
         @keyframes arenaDamagePop {
           0% { opacity: 0; transform: translate(-50%, 10px) scale(.7); }
           18% { opacity: 1; transform: translate(-50%, 0) scale(1.1); }
           100% { opacity: 0; transform: translate(-50%, -38px) scale(1); }
+        }
+
+        @keyframes arenaImpactRing {
+          0% { opacity: 0; transform: translate(-50%, -50%) scale(.2); }
+          22% { opacity: 1; }
+          100% { opacity: 0; transform: translate(-50%, -50%) scale(2.25); }
+        }
+
+        @keyframes arenaImpactFlash {
+          0% { opacity: 0; }
+          16% { opacity: .38; }
+          100% { opacity: 0; }
+        }
+
+        @keyframes arenaStrikeSpark {
+          0% { opacity: 0; transform: translate(-50%, -50%) scale(.45) rotate(0deg); }
+          24% { opacity: 1; transform: translate(-50%, -50%) scale(1.05) rotate(18deg); }
+          100% { opacity: 0; transform: translate(-50%, -50%) scale(.75) rotate(36deg); }
         }
 
         @keyframes arenaHeroHit {
@@ -2291,7 +2455,7 @@ function ArenaDuel({
 
   return (
     <div className="relative z-10 mx-auto flex h-full max-w-[1640px] flex-col gap-3 p-3 sm:p-4" style={{ animation: "arenaDuelReveal 700ms ease-out both" }}>
-      <div className="rounded-[8px] border border-gold/25 bg-obsidian/88 p-3 shadow-[0_18px_60px_rgba(0,0,0,.45)]">
+      <div className="rounded-[8px] border border-gold/10 bg-obsidian/88 p-3 shadow-[0_18px_60px_rgba(0,0,0,.45)]">
         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="flex flex-wrap items-center gap-3">
             <ArenaBadge label="Voce" value={`${arena.playerLife} vida`} tone="gold" />
@@ -2328,8 +2492,8 @@ function ArenaDuel({
           }}
           onDrop={handleBattlefieldDrop}
           className={cn(
-            "relative min-h-0 overflow-hidden rounded-[8px] border bg-[radial-gradient(circle_at_50%_45%,rgba(215,180,106,.14),transparent_30%),linear-gradient(145deg,rgba(14,17,22,.86),rgba(3,5,10,.94))] shadow-[inset_0_0_100px_rgba(0,0,0,.72)] transition",
-            isDropReady ? "border-gold/70 ring-2 ring-gold/35" : "border-white/10"
+            "relative min-h-0 overflow-hidden rounded-[8px] border bg-[radial-gradient(circle_at_50%_45%,rgba(215,180,106,.1),transparent_30%),linear-gradient(145deg,rgba(14,17,22,.86),rgba(3,5,10,.94))] shadow-[inset_0_0_100px_rgba(0,0,0,.72)] transition",
+            isDropReady ? "border-gold/55 ring-2 ring-gold/22" : "border-gold/8"
           )}
         >
           <ArenaBoardDecor />
@@ -2353,7 +2517,7 @@ function ArenaDuel({
             handCount={arena.botHand.length}
             opponent
           />
-          <div className="relative z-10 mx-4 border-y border-gold/10 py-2 text-center text-xs font-black uppercase tracking-[.28em] text-gold/80">
+          <div className="relative z-10 mx-4 border-y border-gold/5 py-2 text-center text-xs font-black uppercase tracking-[.28em] text-gold/60">
             Arena Magic The Galo
           </div>
           <ArenaZone
@@ -2392,8 +2556,8 @@ function ArenaDuel({
           </div>
         </div>
 
-        <aside className="grid min-h-0 grid-rows-[auto_auto_1fr] gap-3 rounded-[8px] border border-white/10 bg-obsidian/80 p-3">
-          <div className="rounded-[7px] border border-white/10 bg-black/25 p-3">
+        <aside className="grid min-h-0 grid-rows-[auto_auto_1fr] gap-3 rounded-[8px] border border-gold/8 bg-obsidian/80 p-3">
+          <div className="rounded-[7px] border border-gold/8 bg-black/25 p-3">
             <span className="text-[10px] font-black uppercase tracking-[.2em] text-mist">Fluxo automatico</span>
             <strong className="mt-2 block text-sm text-frost">
               {isPlayerTurn ? "Sua prioridade" : arena.winner ? "Partida encerrada" : "Bot resolvendo"}
@@ -2408,7 +2572,7 @@ function ArenaDuel({
               <strong className="mt-2 block text-sm leading-5 text-frost">{arena.event.message}</strong>
             </div>
           ) : null}
-          <div className="min-h-0 overflow-hidden rounded-[7px] border border-white/10 bg-black/25 p-3">
+          <div className="min-h-0 overflow-hidden rounded-[7px] border border-gold/8 bg-black/25 p-3">
             <h4 className="text-sm font-black text-gold">Historico claro</h4>
             <div className="mt-2 max-h-72 space-y-2 overflow-y-auto pr-1 text-xs leading-5 text-mist">
               {arena.log.slice(0, 18).map((item, index) => (
@@ -2416,7 +2580,7 @@ function ArenaDuel({
                   key={`${item}-${index}`}
                   className={cn(
                     "rounded-[6px] border px-2 py-1",
-                    index === 0 ? "border-gold/25 bg-gold/10 text-frost" : "border-white/5 bg-white/[.03]"
+                    index === 0 ? "border-gold/20 bg-gold/10 text-frost" : "border-gold/5 bg-white/[.025]"
                   )}
                 >
                   <span className="mr-2 font-black text-gold">{index + 1}</span>
@@ -2436,9 +2600,9 @@ function ArenaBadge({ label, value, tone }: { label: string; value: string; tone
     <div
       className={cn(
         "rounded-[7px] border px-3 py-2",
-        tone === "gold" && "border-gold/30 bg-gold/10",
-        tone === "purple" && "border-purple-300/25 bg-purple-400/10",
-        tone === "neutral" && "border-white/10 bg-black/25"
+        tone === "gold" && "border-gold/18 bg-gold/10",
+        tone === "purple" && "border-purple-300/14 bg-purple-400/10",
+        tone === "neutral" && "border-gold/8 bg-black/25"
       )}
     >
       <span className="text-[10px] font-black uppercase tracking-[.18em] text-mist">{label}</span>
@@ -2450,16 +2614,16 @@ function ArenaBadge({ label, value, tone }: { label: string; value: string; tone
 function ArenaBoardDecor() {
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(255,255,255,.09),transparent_18%),radial-gradient(circle_at_12%_24%,rgba(56,138,179,.24),transparent_16%),radial-gradient(circle_at_88%_74%,rgba(232,122,38,.2),transparent_16%)]" />
-      <div className="absolute left-1/2 top-1/2 h-[82%] w-[72%] -translate-x-1/2 -translate-y-1/2 rounded-full border border-gold/18" />
-      <div className="absolute left-1/2 top-1/2 h-[58%] w-[52%] -translate-x-1/2 -translate-y-1/2 rounded-full border border-gold/16" />
-      <div className="absolute left-1/2 top-0 h-full w-px bg-gradient-to-b from-transparent via-gold/28 to-transparent" />
-      <div className="absolute left-0 top-1/2 h-px w-full bg-gradient-to-r from-transparent via-gold/24 to-transparent" />
-      <div className="absolute left-1/2 top-1/2 grid size-20 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-gold/25 bg-black/22 shadow-[0_0_35px_rgba(215,180,106,.16)]">
-        <div className="size-9 rotate-45 border border-gold/35" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(255,255,255,.025),transparent_18%),radial-gradient(circle_at_12%_24%,rgba(56,138,179,.12),transparent_16%),radial-gradient(circle_at_88%_74%,rgba(232,122,38,.1),transparent_16%)]" />
+      <div className="absolute left-1/2 top-1/2 h-[82%] w-[72%] -translate-x-1/2 -translate-y-1/2 rounded-full border border-gold/7" />
+      <div className="absolute left-1/2 top-1/2 h-[58%] w-[52%] -translate-x-1/2 -translate-y-1/2 rounded-full border border-gold/6" />
+      <div className="absolute left-1/2 top-0 h-full w-px bg-gradient-to-b from-transparent via-gold/10 to-transparent" />
+      <div className="absolute left-0 top-1/2 h-px w-full bg-gradient-to-r from-transparent via-gold/8 to-transparent" />
+      <div className="absolute left-1/2 top-1/2 grid size-20 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-gold/10 bg-black/18 shadow-[0_0_35px_rgba(215,180,106,.1)]">
+        <div className="size-9 rotate-45 border border-gold/12" />
       </div>
-      <div className="absolute left-4 top-4 h-28 w-16 rounded-[6px] border-l border-t border-cyan-300/18 bg-cyan-400/5" />
-      <div className="absolute bottom-4 right-4 h-32 w-20 rounded-[6px] border-b border-r border-orange-300/18 bg-orange-400/5" />
+      <div className="absolute left-4 top-4 h-28 w-16 rounded-[6px] border-l border-t border-cyan-300/8 bg-cyan-400/[.025]" />
+      <div className="absolute bottom-4 right-4 h-32 w-20 rounded-[6px] border-b border-r border-orange-300/8 bg-orange-400/[.025]" />
     </div>
   );
 }
@@ -2535,19 +2699,31 @@ function ArenaCombatAnimation({ event }: { event?: ArenaEvent }) {
 
   const fromPlayer = event.actor === "player";
   const targetPlayer = event.target === "player";
+  const impactPosition = targetPlayer ? "bottom-[23%]" : "top-[23%]";
 
   return (
     <div key={event.id} className="pointer-events-none absolute inset-0 z-40">
+      <div className="absolute inset-0 bg-red-500/20" style={{ animation: "arenaImpactFlash 720ms ease-out both" }} />
       <div
         className={cn(
-          "absolute left-1/2 top-1/2 h-[58%] w-2 rounded-full bg-gradient-to-b from-transparent via-gold to-transparent blur-[1px]",
+          "absolute left-1/2 top-1/2 h-[62%] w-3 rounded-full bg-gradient-to-b from-transparent via-gold to-transparent blur-[1px] shadow-[0_0_24px_rgba(215,180,106,.65)]",
           fromPlayer ? "origin-bottom" : "origin-top"
         )}
         style={{ animation: `${fromPlayer ? "arenaAttackPlayer" : "arenaAttackBot"} 920ms ease-out both` }}
       />
+      <div
+        className={cn("absolute left-1/2 size-20 rounded-full border-2 border-red-200/70 shadow-[0_0_28px_rgba(255,80,55,.65)]", impactPosition)}
+        style={{ animation: "arenaImpactRing 980ms ease-out both" }}
+      />
+      <div
+        className={cn("absolute left-1/2 grid size-16 place-items-center text-4xl font-black text-gold drop-shadow-[0_0_18px_rgba(215,180,106,.9)]", impactPosition)}
+        style={{ animation: "arenaStrikeSpark 760ms ease-out both" }}
+      >
+        X
+      </div>
       {event.amount ? (
         <div
-          className={cn("absolute left-1/2 rounded-full border border-red-300/60 bg-red-600/80 px-4 py-2 text-3xl font-black text-white shadow-[0_0_34px_rgba(255,60,40,.65)]", targetPlayer ? "bottom-[18%]" : "top-[18%]")}
+          className={cn("absolute left-1/2 rounded-full border border-red-300/45 bg-red-600/80 px-4 py-2 text-3xl font-black text-white shadow-[0_0_34px_rgba(255,60,40,.65)]", targetPlayer ? "bottom-[18%]" : "top-[18%]")}
           style={{ animation: "arenaDamagePop 1100ms ease-out both" }}
         >
           -{event.amount}
@@ -2715,13 +2891,13 @@ function ArenaFieldGroup({
     <div
       className={cn(
         "rounded-[8px] border bg-black/25 p-3 shadow-[inset_0_0_32px_rgba(0,0,0,.22)]",
-        variant === "mana" ? "border-emerald-300/15" : "border-gold/18",
+        variant === "mana" ? "border-emerald-300/8" : "border-gold/10",
         compact ? "min-h-[126px]" : variant === "mana" ? "min-h-[170px]" : "min-h-[190px]"
       )}
     >
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className={cn("text-[10px] font-black uppercase tracking-[.2em]", variant === "mana" ? "text-emerald-200" : "text-gold")}>{title}</span>
-        <span className="rounded-full border border-white/10 bg-white/[.06] px-2 py-0.5 text-[10px] font-black text-mist">{cards.length}</span>
+        <span className="rounded-full border border-gold/8 bg-white/[.04] px-2 py-0.5 text-[10px] font-black text-mist">{cards.length}</span>
       </div>
       {cards.length ? (
         <div className={cn("grid gap-2", compact ? "grid-cols-2" : variant === "mana" ? "grid-cols-2" : "grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5")}>
@@ -2730,7 +2906,7 @@ function ArenaFieldGroup({
           ))}
         </div>
       ) : (
-        <div className="grid min-h-[84px] place-items-center rounded-[7px] border border-dashed border-white/10 bg-black/20 text-xs font-bold text-mist">
+        <div className="grid min-h-[84px] place-items-center rounded-[7px] border border-gold/5 bg-black/20 text-xs font-bold text-mist">
           Vazio
         </div>
       )}
@@ -2742,21 +2918,21 @@ function ArenaGraveyard({ cards }: { cards: OpeningHandCard[] }) {
   const preview = cards.slice(-3).reverse();
 
   return (
-    <div className="min-h-[132px] rounded-[8px] border border-purple-300/15 bg-black/25 p-3 shadow-[inset_0_0_32px_rgba(0,0,0,.22)]">
+    <div className="min-h-[132px] rounded-[8px] border border-purple-300/8 bg-black/25 p-3 shadow-[inset_0_0_32px_rgba(0,0,0,.22)]">
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="text-[10px] font-black uppercase tracking-[.2em] text-purple-200">Cemiterio</span>
-        <span className="rounded-full border border-white/10 bg-white/[.06] px-2 py-0.5 text-[10px] font-black text-mist">{cards.length}</span>
+        <span className="rounded-full border border-purple-300/8 bg-white/[.04] px-2 py-0.5 text-[10px] font-black text-mist">{cards.length}</span>
       </div>
       {preview.length ? (
         <div className="space-y-2">
           {preview.map((card, index) => (
-            <div key={`${card.name}-${index}`} className="truncate rounded-[6px] border border-white/10 bg-white/[.04] px-2 py-1 text-xs font-bold text-mist">
+            <div key={`${card.name}-${index}`} className="truncate rounded-[6px] border border-purple-300/8 bg-white/[.035] px-2 py-1 text-xs font-bold text-mist">
               {card.name}
             </div>
           ))}
         </div>
       ) : (
-        <div className="grid min-h-[70px] place-items-center rounded-[7px] border border-dashed border-white/10 bg-black/20 text-xs font-bold text-mist">
+        <div className="grid min-h-[70px] place-items-center rounded-[7px] border border-purple-300/5 bg-black/20 text-xs font-bold text-mist">
           Vazio
         </div>
       )}
@@ -2809,7 +2985,7 @@ function ArenaPermanentCard({ card, compact = false }: { card: ArenaPermanent; c
       className={cn(
         "group relative rounded-[7px] border p-1 transition duration-500 ease-out",
         compact ? "min-h-[104px]" : "min-h-[126px]",
-        card.tapped ? "border-gold/35 bg-gold/10 opacity-85" : "border-white/10 bg-black/25"
+        card.tapped ? "border-gold/26 bg-gold/10 opacity-85" : "border-gold/8 bg-black/25"
       )}
     >
       <div
@@ -2944,6 +3120,9 @@ function OpeningHandCardView({
         transformOrigin: "bottom center"
       }}
     >
+      <span className="pointer-events-none absolute left-3 top-3 z-10 grid size-7 place-items-center rounded-full border border-black/50 bg-[#efe6cf] text-xs font-black text-[#17130d] shadow-[0_4px_14px_rgba(0,0,0,.35)]">
+        {getArenaCardCost(card)}
+      </span>
       {cardImage ? (
         <img
           src={cardImage}

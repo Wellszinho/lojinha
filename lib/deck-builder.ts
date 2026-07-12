@@ -255,6 +255,18 @@ export const commanderPool: CommanderProfile[] = [
     summary: "Blink constante, valor incremental e lock pieces bem posicionadas."
   },
   {
+    name: "Oloro, Ageless Ascetic",
+    identity: ["W", "U", "B"],
+    colorCode: "WUB",
+    archetypes: ["Lifegain", "Control", "Value"],
+    tags: ["popular", "fun", "easy", "old"],
+    priceTier: "medio",
+    power: 7,
+    complexity: 5,
+    releaseYear: 2013,
+    summary: "Esper lifegain/control que ganha vida mesmo fora do campo e transforma vantagem defensiva em valor."
+  },
+  {
     name: "Yuriko, the Tiger's Shadow",
     identity: ["U", "B"],
     colorCode: "UB",
