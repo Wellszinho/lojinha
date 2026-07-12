@@ -287,10 +287,9 @@ function toggleValue(values: string[], value: string) {
 }
 
 function sortCommanders(commanders: CommanderProfile[], filter: CommanderFilterId) {
-  const tagged = commanders.filter((commander) => commander.tags.includes(filter));
-  const base = tagged.length ? tagged : commanders;
-
-  return [...base].sort((left, right) => {
+  return [...commanders].sort((left, right) => {
+    const taggedDiff = Number(right.tags.includes(filter)) - Number(left.tags.includes(filter));
+    if (taggedDiff) return taggedDiff;
     if (filter === "budget") return left.priceTier.localeCompare(right.priceTier) || right.power - left.power;
     if (filter === "easy") return left.complexity - right.complexity || right.power - left.power;
     if (filter === "hard") return right.complexity - left.complexity || right.power - left.power;
@@ -309,6 +308,19 @@ function normalizeCommanderSearch(search: string) {
 
   if (normalized.includes("asceta sem idade")) return "oloro";
   return normalized;
+}
+
+const commanderColorOrder: ManaColor[] = ["W", "U", "B", "R", "G"];
+
+function getIdentityIdForCommanderColors(colors: ManaColor[]) {
+  const normalized = commanderColorOrder.filter((color) => colors.includes(color));
+  if (!normalized.length) return "c";
+
+  return (
+    colorIdentities.find(
+      (identity) => identity.colors.length === normalized.length && normalized.every((color) => identity.colors.includes(color))
+    )?.id ?? "wubrg"
+  );
 }
 
 function mergeCommanderPools(localCommanders: CommanderProfile[], remoteCommanders: CommanderProfile[]) {
@@ -367,13 +379,8 @@ function mapScryfallCommander(card: ScryfallCommanderCard): CommanderProfile | n
     power: rank <= 2000 ? 8 : rank <= 8000 ? 7 : 6,
     complexity: tags.includes("hard") ? 7 : colors.length >= 3 ? 6 : 4,
     releaseYear,
-    summary: oracle ? oracle.slice(0, 150) : "Comandante encontrado na Scryfall e compativel com a identidade escolhida."
+    summary: oracle ? oracle.slice(0, 150) : "Comandante encontrado na Scryfall para a base completa de Commander."
   };
-}
-
-function commanderContainsColors(identity: ColorIdentity, commander: CommanderProfile) {
-  if (identity.colors.includes("C")) return commander.identity.includes("C");
-  return identity.colors.every((color) => commander.identity.includes(color));
 }
 
 function estimatePower(commander: CommanderProfile | undefined, preferences: Record<string, string>, archetypes: string[], complexity: string) {
@@ -1230,13 +1237,18 @@ export function DeckBuilderClient() {
 
   const activeIdentity = colorMode === "auto" ? suggestedIdentity : getColorIdentityById(selectedIdentityId);
   const commanderCandidates = useMemo(() => mergeCommanderPools(commanderPool, remoteCommanders), [remoteCommanders]);
+  const shouldLoadCommanders = activeSection >= 4;
 
   useEffect(() => {
+    if (!shouldLoadCommanders) {
+      setCommanderSearchStatus("idle");
+      return;
+    }
+
     const controller = new AbortController();
     const timeout = window.setTimeout(() => {
       setCommanderSearchStatus("loading");
       const params = new URLSearchParams({
-        identity: activeIdentity.code,
         search: commanderSearch
       });
 
@@ -1260,14 +1272,13 @@ export function DeckBuilderClient() {
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [activeIdentity.code, commanderSearch]);
+  }, [commanderSearch, shouldLoadCommanders]);
 
   const compatibleCommanders = useMemo(() => {
     const search = normalizeCommanderSearch(commanderSearch);
-    const pool = commanderCandidates.filter((commander) => commanderContainsColors(activeIdentity, commander));
-    const searched = search ? pool.filter((commander) => commander.name.toLowerCase().includes(search)) : pool;
+    const searched = search ? commanderCandidates.filter((commander) => commander.name.toLowerCase().includes(search)) : commanderCandidates;
     return sortCommanders(searched, activeCommanderFilter);
-  }, [activeCommanderFilter, activeIdentity, commanderCandidates, commanderSearch]);
+  }, [activeCommanderFilter, commanderCandidates, commanderSearch]);
 
   const selectedCommander = useMemo(
     () => commanderCandidates.find((commander) => commander.name === selectedCommanderName),
@@ -1275,10 +1286,7 @@ export function DeckBuilderClient() {
   );
 
   const recommendedCommander = compatibleCommanders[0];
-  const displayCommander =
-    selectedCommander && compatibleCommanders.some((commander) => commander.name === selectedCommander.name)
-      ? selectedCommander
-      : recommendedCommander;
+  const displayCommander = selectedCommander ?? recommendedCommander;
 
   const estimatedPower = estimatePower(displayCommander, preferences, selectedArchetypes, complexity);
   const deckSections = buildDeckSections(displayCommander, activeIdentity, selectedArchetypes, budgetUnlimited);
@@ -1295,7 +1303,17 @@ export function DeckBuilderClient() {
     const candidates = compatibleCommanders.slice(0, Math.min(compatibleCommanders.length, 8));
     if (!candidates.length) return;
     const index = Math.floor(Math.random() * candidates.length);
-    setSelectedCommanderName(candidates[index].name);
+    selectCommander(candidates[index].name);
+  }
+
+  function selectCommander(name: string) {
+    const commander = commanderCandidates.find((item) => item.name === name);
+    setSelectedCommanderName(name);
+
+    if (commander) {
+      setColorMode("choose");
+      setSelectedIdentityId(getIdentityIdForCommanderColors(commander.identity));
+    }
   }
 
   return (
@@ -1396,7 +1414,7 @@ export function DeckBuilderClient() {
                 compatibleCommanders={compatibleCommanders}
                 displayCommander={displayCommander}
                 commanderSearchStatus={commanderSearchStatus}
-                setSelectedCommanderName={setSelectedCommanderName}
+                selectCommander={selectCommander}
                 surpriseMe={surpriseMe}
               />
             ) : null}
@@ -1684,7 +1702,7 @@ function CommanderSection({
   compatibleCommanders,
   displayCommander,
   commanderSearchStatus,
-  setSelectedCommanderName,
+  selectCommander,
   surpriseMe
 }: {
   activeIdentity: ColorIdentity;
@@ -1695,24 +1713,25 @@ function CommanderSection({
   compatibleCommanders: CommanderProfile[];
   displayCommander: CommanderProfile | undefined;
   commanderSearchStatus: "idle" | "loading" | "error";
-  setSelectedCommanderName: (value: string) => void;
+  selectCommander: (value: string) => void;
   surpriseMe: () => void;
 }) {
   return (
     <section className="grid gap-5">
       <div className="flex flex-col gap-3 rounded-premium border border-white/10 bg-black/20 p-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <p className="text-sm text-mist">Mostrando comandantes que contem</p>
+          <p className="text-sm text-mist">Todos os comandantes do Commander</p>
           <div className="mt-1 flex items-center gap-3">
-            <strong className="text-frost">{activeIdentity.name}</strong>
+            <strong className="text-frost">{compatibleCommanders.length} encontrados</strong>
             <ManaPips colors={activeIdentity.colors} />
           </div>
+          <p className="mt-1 text-xs text-mist">Identidade atual: {activeIdentity.name}. Ela muda automaticamente ao escolher um comandante.</p>
           <p className="mt-2 text-xs text-mist">
             {commanderSearchStatus === "loading"
-              ? "Buscando comandantes na Scryfall..."
+              ? "Carregando base completa da Scryfall..."
               : commanderSearchStatus === "error"
                 ? "Busca viva indisponivel agora; exibindo base local."
-                : "Base local combinada com busca viva da Scryfall."}
+                : "Base completa da Scryfall combinada com favoritos locais."}
           </p>
         </div>
         <Button type="button" variant="secondary" onClick={surpriseMe}>
@@ -1756,7 +1775,7 @@ function CommanderSection({
           <button
             key={commander.name}
             type="button"
-            onClick={() => setSelectedCommanderName(commander.name)}
+            onClick={() => selectCommander(commander.name)}
             className={cn(
               "rounded-premium border p-4 text-left transition hover:border-gold/35",
               displayCommander?.name === commander.name ? "border-gold/50 bg-gold/10" : "border-white/10 bg-black/20"
@@ -2315,6 +2334,13 @@ function ArenaStyles() {
           100% { opacity: 0; transform: translate(-50%, -50%) scale(1.08); filter: blur(4px); }
         }
 
+        @keyframes arenaCombatBanner {
+          0% { opacity: 0; transform: translate(-50%, -50%) scale(.72); filter: blur(8px); }
+          18% { opacity: 1; transform: translate(-50%, -50%) scale(1.06); filter: blur(0); }
+          72% { opacity: 1; transform: translate(-50%, -50%) scale(1); filter: blur(0); }
+          100% { opacity: 0; transform: translate(-50%, -50%) scale(1.14); filter: blur(4px); }
+        }
+
         @keyframes arenaAttackPlayer {
           0% { opacity: 0; transform: translate(-50%, 145%) scaleY(.24) rotate(-8deg); }
           18% { opacity: 1; }
@@ -2493,7 +2519,7 @@ function ArenaDuel({
           onDrop={handleBattlefieldDrop}
           className={cn(
             "relative min-h-0 overflow-hidden rounded-[8px] border bg-[radial-gradient(circle_at_50%_45%,rgba(215,180,106,.1),transparent_30%),linear-gradient(145deg,rgba(14,17,22,.86),rgba(3,5,10,.94))] shadow-[inset_0_0_100px_rgba(0,0,0,.72)] transition",
-            isDropReady ? "border-gold/55 ring-2 ring-gold/22" : "border-gold/8"
+            isDropReady ? "border-gold/55 ring-2 ring-gold/22" : "border-transparent"
           )}
         >
           <ArenaBoardDecor />
@@ -2517,7 +2543,7 @@ function ArenaDuel({
             handCount={arena.botHand.length}
             opponent
           />
-          <div className="relative z-10 mx-4 border-y border-gold/5 py-2 text-center text-xs font-black uppercase tracking-[.28em] text-gold/60">
+          <div className="relative z-10 mx-4 py-2 text-center text-xs font-black uppercase tracking-[.28em] text-gold/50">
             Arena Magic The Galo
           </div>
           <ArenaZone
@@ -2614,16 +2640,10 @@ function ArenaBadge({ label, value, tone }: { label: string; value: string; tone
 function ArenaBoardDecor() {
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(255,255,255,.025),transparent_18%),radial-gradient(circle_at_12%_24%,rgba(56,138,179,.12),transparent_16%),radial-gradient(circle_at_88%_74%,rgba(232,122,38,.1),transparent_16%)]" />
-      <div className="absolute left-1/2 top-1/2 h-[82%] w-[72%] -translate-x-1/2 -translate-y-1/2 rounded-full border border-gold/7" />
-      <div className="absolute left-1/2 top-1/2 h-[58%] w-[52%] -translate-x-1/2 -translate-y-1/2 rounded-full border border-gold/6" />
-      <div className="absolute left-1/2 top-0 h-full w-px bg-gradient-to-b from-transparent via-gold/10 to-transparent" />
-      <div className="absolute left-0 top-1/2 h-px w-full bg-gradient-to-r from-transparent via-gold/8 to-transparent" />
-      <div className="absolute left-1/2 top-1/2 grid size-20 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-gold/10 bg-black/18 shadow-[0_0_35px_rgba(215,180,106,.1)]">
-        <div className="size-9 rotate-45 border border-gold/12" />
-      </div>
-      <div className="absolute left-4 top-4 h-28 w-16 rounded-[6px] border-l border-t border-cyan-300/8 bg-cyan-400/[.025]" />
-      <div className="absolute bottom-4 right-4 h-32 w-20 rounded-[6px] border-b border-r border-orange-300/8 bg-orange-400/[.025]" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_42%,rgba(215,180,106,.08),transparent_30%),radial-gradient(circle_at_16%_22%,rgba(56,138,179,.1),transparent_18%),radial-gradient(circle_at_86%_78%,rgba(232,122,38,.08),transparent_20%)]" />
+      <div className="absolute inset-x-8 top-[42%] h-28 rounded-full bg-gold/[.025] blur-3xl" />
+      <div className="absolute left-8 top-8 size-36 rounded-full bg-cyan-400/[.035] blur-2xl" />
+      <div className="absolute bottom-8 right-8 size-44 rounded-full bg-orange-400/[.035] blur-2xl" />
     </div>
   );
 }
@@ -2729,6 +2749,15 @@ function ArenaCombatAnimation({ event }: { event?: ArenaEvent }) {
           -{event.amount}
         </div>
       ) : null}
+      <div
+        className="absolute left-1/2 top-1/2 rounded-[8px] border border-red-200/35 bg-black/75 px-7 py-4 text-center shadow-[0_24px_80px_rgba(0,0,0,.7),0_0_42px_rgba(255,70,45,.22)]"
+        style={{ animation: "arenaCombatBanner 1200ms ease-out both" }}
+      >
+        <span className="text-[10px] font-black uppercase tracking-[.28em] text-red-200">
+          {targetPlayer ? "Voce recebeu dano" : "Ataque ao bot"}
+        </span>
+        <strong className="mt-1 block text-3xl font-black text-frost">{event.kind === "attack" ? "ATAQUE" : "DANO"}</strong>
+      </div>
     </div>
   );
 }
@@ -2890,14 +2919,14 @@ function ArenaFieldGroup({
   return (
     <div
       className={cn(
-        "rounded-[8px] border bg-black/25 p-3 shadow-[inset_0_0_32px_rgba(0,0,0,.22)]",
-        variant === "mana" ? "border-emerald-300/8" : "border-gold/10",
+        "rounded-[8px] bg-black/25 p-3 shadow-[inset_0_0_38px_rgba(0,0,0,.24),0_12px_32px_rgba(0,0,0,.16)]",
+        variant === "mana" ? "bg-emerald-950/[.12]" : "bg-gold/[.035]",
         compact ? "min-h-[126px]" : variant === "mana" ? "min-h-[170px]" : "min-h-[190px]"
       )}
     >
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className={cn("text-[10px] font-black uppercase tracking-[.2em]", variant === "mana" ? "text-emerald-200" : "text-gold")}>{title}</span>
-        <span className="rounded-full border border-gold/8 bg-white/[.04] px-2 py-0.5 text-[10px] font-black text-mist">{cards.length}</span>
+        <span className="rounded-full bg-white/[.055] px-2 py-0.5 text-[10px] font-black text-mist">{cards.length}</span>
       </div>
       {cards.length ? (
         <div className={cn("grid gap-2", compact ? "grid-cols-2" : variant === "mana" ? "grid-cols-2" : "grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5")}>
@@ -2906,7 +2935,7 @@ function ArenaFieldGroup({
           ))}
         </div>
       ) : (
-        <div className="grid min-h-[84px] place-items-center rounded-[7px] border border-gold/5 bg-black/20 text-xs font-bold text-mist">
+        <div className="grid min-h-[84px] place-items-center rounded-[7px] bg-black/20 text-xs font-bold text-mist">
           Vazio
         </div>
       )}
@@ -2918,21 +2947,21 @@ function ArenaGraveyard({ cards }: { cards: OpeningHandCard[] }) {
   const preview = cards.slice(-3).reverse();
 
   return (
-    <div className="min-h-[132px] rounded-[8px] border border-purple-300/8 bg-black/25 p-3 shadow-[inset_0_0_32px_rgba(0,0,0,.22)]">
+    <div className="min-h-[132px] rounded-[8px] bg-purple-950/[.12] p-3 shadow-[inset_0_0_38px_rgba(0,0,0,.24),0_12px_32px_rgba(0,0,0,.16)]">
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="text-[10px] font-black uppercase tracking-[.2em] text-purple-200">Cemiterio</span>
-        <span className="rounded-full border border-purple-300/8 bg-white/[.04] px-2 py-0.5 text-[10px] font-black text-mist">{cards.length}</span>
+        <span className="rounded-full bg-white/[.055] px-2 py-0.5 text-[10px] font-black text-mist">{cards.length}</span>
       </div>
       {preview.length ? (
         <div className="space-y-2">
           {preview.map((card, index) => (
-            <div key={`${card.name}-${index}`} className="truncate rounded-[6px] border border-purple-300/8 bg-white/[.035] px-2 py-1 text-xs font-bold text-mist">
+            <div key={`${card.name}-${index}`} className="truncate rounded-[6px] bg-white/[.045] px-2 py-1 text-xs font-bold text-mist">
               {card.name}
             </div>
           ))}
         </div>
       ) : (
-        <div className="grid min-h-[70px] place-items-center rounded-[7px] border border-purple-300/5 bg-black/20 text-xs font-bold text-mist">
+        <div className="grid min-h-[70px] place-items-center rounded-[7px] bg-black/20 text-xs font-bold text-mist">
           Vazio
         </div>
       )}
@@ -2985,7 +3014,7 @@ function ArenaPermanentCard({ card, compact = false }: { card: ArenaPermanent; c
       className={cn(
         "group relative rounded-[7px] border p-1 transition duration-500 ease-out",
         compact ? "min-h-[104px]" : "min-h-[126px]",
-        card.tapped ? "border-gold/26 bg-gold/10 opacity-85" : "border-gold/8 bg-black/25"
+        card.tapped ? "border-gold/26 bg-gold/10 opacity-85" : "border-transparent bg-black/25"
       )}
     >
       <div
