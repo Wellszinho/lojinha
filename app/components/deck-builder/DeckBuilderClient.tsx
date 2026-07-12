@@ -18,7 +18,7 @@ import {
   Wand2,
   X
 } from "lucide-react";
-import type { ReactNode } from "react";
+import type { DragEvent, ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
@@ -890,14 +890,22 @@ function attackWithBoard(state: ArenaState, owner: "player" | "bot"): ArenaState
 function playFirstLand(state: ArenaState, owner: "player" | "bot"): ArenaState {
   const isPlayer = owner === "player";
   const handKey = isPlayer ? "playerHand" : "botHand";
-  const battlefieldKey = isPlayer ? "playerBattlefield" : "botBattlefield";
   const landIndex = state[handKey].findIndex((card) => card.section === "Terrenos");
   if (landIndex < 0) return state;
 
-  const land = state[handKey][landIndex];
+  return playLandAt(state, owner, landIndex);
+}
+
+function playLandAt(state: ArenaState, owner: "player" | "bot", cardIndex: number): ArenaState {
+  const isPlayer = owner === "player";
+  const handKey = isPlayer ? "playerHand" : "botHand";
+  const battlefieldKey = isPlayer ? "playerBattlefield" : "botBattlefield";
+  const land = state[handKey][cardIndex];
+  if (!land || land.section !== "Terrenos") return state;
+
   return {
     ...state,
-    [handKey]: state[handKey].filter((_, index) => index !== landIndex),
+    [handKey]: state[handKey].filter((_, index) => index !== cardIndex),
     [battlefieldKey]: [...state[battlefieldKey], makeArenaPermanent(land, owner, state[battlefieldKey].length)],
     log: [`${isPlayer ? "Voce baixou" : "Bot do Galo baixou"} ${land.name}.`, ...state.log]
   };
@@ -1535,7 +1543,7 @@ function ResultSection({
 
   useEffect(() => {
     if (arenaPhase !== "intro") return;
-    const timer = window.setTimeout(() => setArenaPhase("duel"), 2400);
+    const timer = window.setTimeout(() => setArenaPhase("duel"), 3200);
     return () => window.clearTimeout(timer);
   }, [arenaPhase]);
 
@@ -1639,6 +1647,33 @@ function ResultSection({
       const card = current.playerHand[cardIndex];
       const nextState = castArenaCard(current, "player", cardIndex);
       return { ...nextState, playerManaSpent: current.playerManaSpent + getArenaCardCost(card) };
+    });
+  }
+
+  function handleArenaPlayCard(cardIndex: number) {
+    setArenaState((current) => {
+      if (!current || current.activeTurn !== "player" || current.winner) return current;
+
+      const card = current.playerHand[cardIndex];
+      if (!card) return current;
+
+      if (card.section === "Terrenos") {
+        if (current.playerLandPlayedThisTurn) return { ...current, log: ["Voce ja baixou terreno neste turno.", ...current.log] };
+        const nextState = playLandAt(current, "player", cardIndex);
+        return { ...nextState, playerLandPlayedThisTurn: true };
+      }
+
+      const availableMana = getManaSources(current.playerBattlefield) - current.playerManaSpent;
+      const cost = getArenaCardCost(card);
+      if (cost > availableMana) {
+        return {
+          ...current,
+          log: [`${card.name} custa ${cost}. Voce tem ${Math.max(0, availableMana)} mana disponivel.`, ...current.log]
+        };
+      }
+
+      const nextState = castArenaCard(current, "player", cardIndex);
+      return { ...nextState, playerManaSpent: current.playerManaSpent + cost };
     });
   }
 
@@ -1787,6 +1822,7 @@ function ResultSection({
             onDraw={handleArenaDraw}
             onPlayLand={handleArenaLand}
             onCast={handleArenaCast}
+            onPlayCard={handleArenaPlayCard}
             onAttack={handleArenaAttack}
             onPass={handleArenaPass}
           />
@@ -1865,6 +1901,7 @@ function ArenaOverlay({
   onDraw,
   onPlayLand,
   onCast,
+  onPlayCard,
   onAttack,
   onPass
 }: {
@@ -1877,6 +1914,7 @@ function ArenaOverlay({
   onDraw: () => void;
   onPlayLand: () => void;
   onCast: () => void;
+  onPlayCard: (cardIndex: number) => void;
   onAttack: () => void;
   onPass: () => void;
 }) {
@@ -1897,7 +1935,8 @@ function ArenaOverlay({
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-[120] overflow-hidden bg-black/85 text-frost backdrop-blur-md">
+    <div className="fixed inset-0 z-[120] overflow-hidden bg-black/85 text-frost backdrop-blur-md" style={{ animation: "arenaBackdropIn 520ms ease-out both" }}>
+      <ArenaStyles />
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_18%,rgba(215,180,106,.22),transparent_30%),radial-gradient(circle_at_20%_80%,rgba(93,63,161,.2),transparent_28%)]" />
       {phase === "intro" ? (
         <ArenaIntro openingHand={openingHand} onClose={onClose} />
@@ -1910,11 +1949,53 @@ function ArenaOverlay({
           onDraw={onDraw}
           onPlayLand={onPlayLand}
           onCast={onCast}
+          onPlayCard={onPlayCard}
           onAttack={onAttack}
           onPass={onPass}
         />
       )}
     </div>
+  );
+}
+
+function ArenaStyles() {
+  return (
+    <style>
+      {`
+        @keyframes arenaBackdropIn {
+          from { opacity: 0; transform: scale(1.02); filter: blur(8px); }
+          to { opacity: 1; transform: scale(1); filter: blur(0); }
+        }
+
+        @keyframes arenaPortalSpin {
+          0% { opacity: 0; transform: translate(-50%, -50%) scale(.55) rotate(0deg); }
+          35% { opacity: 1; transform: translate(-50%, -50%) scale(1.05) rotate(140deg); }
+          100% { opacity: .72; transform: translate(-50%, -50%) scale(1.24) rotate(360deg); }
+        }
+
+        @keyframes arenaTitleRise {
+          0% { opacity: 0; transform: translateY(22px) scale(.96); }
+          100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        @keyframes arenaProgressFill {
+          0% { width: 0%; opacity: .3; }
+          72% { width: 78%; opacity: 1; }
+          100% { width: 100%; opacity: 1; }
+        }
+
+        @keyframes arenaCardsSweep {
+          0% { opacity: 0; transform: translateY(70px) scale(.82); filter: blur(8px); }
+          55% { opacity: 1; filter: blur(0); }
+          100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+        }
+
+        @keyframes arenaDuelReveal {
+          0% { opacity: 0; transform: translateY(18px) scale(.985); filter: blur(8px); }
+          100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+        }
+      `}
+    </style>
   );
 }
 
@@ -1924,18 +2005,27 @@ function ArenaIntro({ openingHand, onClose }: { openingHand: OpeningHandCard[]; 
       <button type="button" onClick={onClose} className="absolute right-5 top-5 grid size-10 place-items-center rounded-full border border-white/10 bg-black/40 text-mist transition hover:text-frost">
         <X className="size-5" />
       </button>
-      <div className="absolute left-1/2 top-1/2 size-[560px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-gold/20 bg-gold/5 shadow-[0_0_120px_rgba(215,180,106,.22)] animate-pulse" />
-      <div className="absolute left-1/2 top-1/2 size-[390px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-purple-400/20" />
-      <div className="relative">
+      <div
+        className="absolute left-1/2 top-1/2 size-[620px] rounded-full border border-gold/25 bg-gold/5 shadow-[0_0_140px_rgba(215,180,106,.26)]"
+        style={{ animation: "arenaPortalSpin 2.8s ease-in-out both" }}
+      />
+      <div
+        className="absolute left-1/2 top-1/2 size-[420px] rounded-full border border-purple-400/25 shadow-[inset_0_0_80px_rgba(93,63,161,.22)]"
+        style={{ animation: "arenaPortalSpin 2.8s ease-in-out .18s both reverse" }}
+      />
+      <div className="relative" style={{ animation: "arenaTitleRise 900ms ease-out 220ms both" }}>
         <span className="text-xs font-black uppercase tracking-[.35em] text-gold">Magic The Galo Arena</span>
         <h2 className="mt-4 text-4xl font-black text-frost sm:text-6xl">Preparando duelo</h2>
         <p className="mx-auto mt-4 max-w-xl text-sm leading-6 text-mist">
           O portal esta embaralhando sua mao, preparando o bot e abrindo a mesa de Commander.
         </p>
         <div className="mx-auto mt-8 h-2 max-w-md overflow-hidden rounded-full bg-white/10">
-          <div className="h-full w-2/3 rounded-full bg-gradient-to-r from-gold via-frost to-purple-300 shadow-[0_0_24px_rgba(215,180,106,.65)]" />
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-gold via-frost to-purple-300 shadow-[0_0_24px_rgba(215,180,106,.65)]"
+            style={{ animation: "arenaProgressFill 2.35s cubic-bezier(.2,.8,.2,1) 260ms both" }}
+          />
         </div>
-        <div className="mt-10 hidden h-60 min-w-[760px] sm:block">
+        <div className="mt-10 hidden h-60 min-w-[760px] sm:block" style={{ animation: "arenaCardsSweep 1.25s ease-out 780ms both" }}>
           <div className="relative mx-auto h-full">
             {openingHand.map((card, index) => (
               <OpeningHandCardView key={`${card.name}-intro-${index}`} card={card} index={index} total={openingHand.length} compact />
@@ -1955,6 +2045,7 @@ function ArenaDuel({
   onDraw,
   onPlayLand,
   onCast,
+  onPlayCard,
   onAttack,
   onPass
 }: {
@@ -1965,15 +2056,27 @@ function ArenaDuel({
   onDraw: () => void;
   onPlayLand: () => void;
   onCast: () => void;
+  onPlayCard: (cardIndex: number) => void;
   onAttack: () => void;
   onPass: () => void;
 }) {
+  const [draggingCardIndex, setDraggingCardIndex] = useState<number | null>(null);
+  const [isDropReady, setIsDropReady] = useState(false);
   const playerMana = Math.max(0, getManaSources(arena.playerBattlefield) - arena.playerManaSpent);
   const botMana = getManaSources(arena.botBattlefield);
   const isPlayerTurn = arena.activeTurn === "player" && !arena.winner;
+  const draggingCard = draggingCardIndex === null ? null : arena.playerHand[draggingCardIndex];
+
+  function handleBattlefieldDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    setIsDropReady(false);
+    if (!isPlayerTurn || draggingCardIndex === null) return;
+    onPlayCard(draggingCardIndex);
+    setDraggingCardIndex(null);
+  }
 
   return (
-    <div className="relative z-10 mx-auto flex h-full max-w-[1640px] flex-col gap-3 p-3 sm:p-4">
+    <div className="relative z-10 mx-auto flex h-full max-w-[1640px] flex-col gap-3 p-3 sm:p-4" style={{ animation: "arenaDuelReveal 700ms ease-out both" }}>
       <div className="rounded-[8px] border border-gold/25 bg-obsidian/88 p-3 shadow-[0_18px_60px_rgba(0,0,0,.45)]">
         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="flex flex-wrap items-center gap-3">
@@ -2006,7 +2109,29 @@ function ArenaDuel({
       </div>
 
       <div className="grid min-h-0 flex-1 gap-3 xl:grid-cols-[1fr_310px]">
-        <div className="relative min-h-0 overflow-hidden rounded-[8px] border border-white/10 bg-[radial-gradient(circle_at_50%_45%,rgba(215,180,106,.14),transparent_30%),linear-gradient(145deg,rgba(14,17,22,.86),rgba(3,5,10,.94))] shadow-[inset_0_0_100px_rgba(0,0,0,.72)]">
+        <div
+          onDragOver={(event) => {
+            if (!isPlayerTurn) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+          }}
+          onDragEnter={() => {
+            if (isPlayerTurn) setIsDropReady(true);
+          }}
+          onDragLeave={(event) => {
+            if (event.currentTarget === event.target) setIsDropReady(false);
+          }}
+          onDrop={handleBattlefieldDrop}
+          className={cn(
+            "relative min-h-0 overflow-hidden rounded-[8px] border bg-[radial-gradient(circle_at_50%_45%,rgba(215,180,106,.14),transparent_30%),linear-gradient(145deg,rgba(14,17,22,.86),rgba(3,5,10,.94))] shadow-[inset_0_0_100px_rgba(0,0,0,.72)] transition",
+            isDropReady ? "border-gold/70 ring-2 ring-gold/35" : "border-white/10"
+          )}
+        >
+          {draggingCard ? (
+            <div className="pointer-events-none absolute left-1/2 top-1/2 z-30 -translate-x-1/2 -translate-y-1/2 rounded-full border border-gold/40 bg-black/70 px-5 py-3 text-sm font-black text-gold shadow-[0_0_34px_rgba(215,180,106,.32)]">
+              Solte para {draggingCard.section === "Terrenos" ? "baixar" : "conjurar"} {draggingCard.name}
+            </div>
+          ) : null}
           <ArenaZone
             title="Campo do Bot"
             life={arena.botLife}
@@ -2029,7 +2154,20 @@ function ArenaDuel({
           <div className="absolute bottom-3 left-1/2 h-[250px] min-w-[880px] -translate-x-1/2 sm:h-[300px]">
             <div className="relative h-full">
               {arena.playerHand.map((card, index) => (
-                <OpeningHandCardView key={`${card.name}-arena-${index}`} card={card} index={index} total={arena.playerHand.length} compact />
+                <OpeningHandCardView
+                  key={`${card.name}-arena-${index}`}
+                  card={card}
+                  index={index}
+                  total={arena.playerHand.length}
+                  compact
+                  draggable={isPlayerTurn}
+                  isDragging={draggingCardIndex === index}
+                  onDragStart={() => setDraggingCardIndex(index)}
+                  onDragEnd={() => {
+                    setDraggingCardIndex(null);
+                    setIsDropReady(false);
+                  }}
+                />
               ))}
             </div>
           </div>
@@ -2039,7 +2177,7 @@ function ArenaDuel({
           <div>
             <h3 className="text-lg font-black text-frost">Acoes</h3>
             <p className="mt-1 text-xs leading-5 text-mist">
-              Regras simplificadas para testar ritmo: terrenos e ramp geram mana, cartas viram permanentes, remocoes removem ameacas.
+              Arraste uma carta da mao para o seu campo. Terrenos baixam; magicas usam mana disponivel.
             </p>
           </div>
           <div className="grid gap-2">
@@ -2181,7 +2319,25 @@ function ArenaPermanentCard({ card }: { card: ArenaPermanent }) {
   );
 }
 
-function OpeningHandCardView({ card, index, total, compact = false }: { card: OpeningHandCard; index: number; total: number; compact?: boolean }) {
+function OpeningHandCardView({
+  card,
+  index,
+  total,
+  compact = false,
+  draggable = false,
+  isDragging = false,
+  onDragStart,
+  onDragEnd
+}: {
+  card: OpeningHandCard;
+  index: number;
+  total: number;
+  compact?: boolean;
+  draggable?: boolean;
+  isDragging?: boolean;
+  onDragStart?: () => void;
+  onDragEnd?: () => void;
+}) {
   const [isHovered, setIsHovered] = useState(false);
   const [cardImage, setCardImage] = useState<string | null | undefined>(() => cardImageCache.get(card.name));
   const theme = getOpeningHandTheme(card.section);
@@ -2223,10 +2379,20 @@ function OpeningHandCardView({ card, index, total, compact = false }: { card: Op
       onMouseLeave={() => setIsHovered(false)}
       onFocus={() => setIsHovered(true)}
       onBlur={() => setIsHovered(false)}
+      draggable={draggable}
+      onDragStart={(event) => {
+        if (!draggable) return;
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", String(index));
+        onDragStart?.();
+      }}
+      onDragEnd={onDragEnd}
       tabIndex={0}
       className={cn(
         "absolute left-1/2 rounded-[16px] text-[#17130d] outline-none shadow-[0_28px_42px_rgba(0,0,0,.58)] transition-[filter,box-shadow] duration-200 hover:shadow-[0_34px_70px_rgba(0,0,0,.82)] focus:shadow-[0_34px_70px_rgba(0,0,0,.82)]",
-        compact ? "bottom-0 h-[232px] w-[166px] sm:h-[270px] sm:w-[194px]" : "bottom-[8%] h-[360px] w-[258px] sm:h-[430px] sm:w-[308px]"
+        compact ? "bottom-0 h-[232px] w-[166px] sm:h-[270px] sm:w-[194px]" : "bottom-[8%] h-[360px] w-[258px] sm:h-[430px] sm:w-[308px]",
+        draggable && "cursor-grab active:cursor-grabbing",
+        isDragging && "opacity-45"
       )}
       style={{
         zIndex: isHovered ? 80 : index + 1,
