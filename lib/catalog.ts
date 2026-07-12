@@ -595,6 +595,56 @@ export const products: Product[] = [
     }
   },
   {
+    id: "prod_edgar_markov_tomb_deckbox",
+    name: "Deck Box Edgar Markov's Tomb",
+    slug: "deck-box-edgar-markovs-tomb",
+    description:
+      "Deck box tematica Edgar Markov's Tomb com visual de tumba gotica, estatua esculpida e compartimento interno para deck Commander. Uma peca premium para jogadores de vampiros, aristocrats e colecionadores de Magic.",
+    price: 16000,
+    category: "deck-boxes",
+    collection: "planos-e-lendas",
+    productType: "deck-box",
+    rating: 5,
+    reviewCount: 1,
+    stock: 1,
+    sku: "MTG-EDGAR-TOMB-001",
+    material: "Estrutura rigida personalizada com acabamento de tumba esculpida",
+    compatibility: ["Magic", "Commander"],
+    tags: ["deck box", "edgar markov", "vampiro", "tumba", "commander", "magic", "premium"],
+    images: [
+      {
+        src: "/images/products/edgar-markov-tomb-deckbox/cover.png",
+        alt: "Deck Box Edgar Markov's Tomb fechada em vista lateral"
+      },
+      {
+        src: "/images/products/edgar-markov-tomb-deckbox/open.png",
+        alt: "Deck Box Edgar Markov's Tomb aberta com compartimento para deck"
+      },
+      {
+        src: "/images/products/edgar-markov-tomb-deckbox/front.png",
+        alt: "Deck Box Edgar Markov's Tomb em vista frontal"
+      }
+    ],
+    isFeatured: true,
+    isNew: true,
+    tone: "from-stone-400/25 via-zinc-950 to-violet/25",
+    dimensions: { width: "Personalizado", height: "Personalizado", depth: "Personalizado", weight: "Sob consulta" },
+    specs: [
+      "Deck box tematica Edgar Markov's Tomb",
+      "Visual de tumba gotica com estatua esculpida",
+      "Compartimento interno para deck Commander",
+      "Tema vampiro para decks aristocrats e tribal",
+      "Preco unico de R$ 160,00"
+    ],
+    accessory: {
+      material: "Estrutura rigida personalizada",
+      dimensions: "Personalizado",
+      capacity: "Deck Commander",
+      theme: "Edgar Markov's Tomb",
+      color: "Cinza pedra, preto e detalhes vampiricos"
+    }
+  },
+  {
     id: "prod_rhystic_study_wot",
     name: "Rhystic Study - Enchanting Tales",
     slug: "rhystic-study-enchanting-tales",
