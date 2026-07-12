@@ -9,10 +9,22 @@ import { Button } from "@/components/ui/Button";
 import type { Product } from "@/lib/catalog";
 import { cn, formatMoney, getDiscountPercent } from "@/lib/utils";
 
+function getInitialSelectedAddOns(product: Product) {
+  return (
+    product.addOnGroups?.reduce<Record<string, string[]>>((initial, group) => {
+      if (group.defaultSelectedOptionId) {
+        initial[group.id] = [group.defaultSelectedOptionId];
+      }
+
+      return initial;
+    }, {}) ?? {}
+  );
+}
+
 export function ProductPurchasePanel({ product }: { product: Product }) {
   const { addItem, toggleFavorite, isFavorite } = useCart();
   const [quantity, setQuantity] = useState(1);
-  const [selectedAddOns, setSelectedAddOns] = useState<Record<string, string[]>>({});
+  const [selectedAddOns, setSelectedAddOns] = useState<Record<string, string[]>>(() => getInitialSelectedAddOns(product));
   const favorite = isFavorite(product.id);
   const discount = getDiscountPercent(product.price, product.compareAtPrice);
 
@@ -91,7 +103,7 @@ export function ProductPurchasePanel({ product }: { product: Product }) {
                 <h2 className="font-black text-frost">{group.title}</h2>
                 <p className="mt-2 text-sm leading-6 text-mist">{group.description}</p>
                 <div className="mt-4 grid gap-2">
-                  {group.selection === "single" ? (
+                  {group.selection === "single" && group.allowNone !== false ? (
                     <label className="flex cursor-pointer items-start gap-3 rounded-premium border border-white/10 bg-black/20 p-3 text-sm text-mist">
                       <input
                         type="radio"
@@ -127,7 +139,7 @@ export function ProductPurchasePanel({ product }: { product: Product }) {
                         <span className="min-w-0 flex-1">
                           <span className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                             <strong className="text-frost">{option.label}</strong>
-                            <strong className="text-gold">+ {formatMoney(option.price)}</strong>
+                            <strong className="text-gold">{option.price > 0 ? `+ ${formatMoney(option.price)}` : "Incluso"}</strong>
                           </span>
                           <span className="mt-1 block leading-5">{option.description}</span>
                           {option.sourceUrl ? (

@@ -29,6 +29,8 @@ export type ProductAddOnGroup = {
   title: string;
   description: string;
   selection: "single" | "multiple";
+  allowNone?: boolean;
+  defaultSelectedOptionId?: string;
   options: ProductAddOnOption[];
 };
 
@@ -442,6 +444,114 @@ export const products: Product[] = [
       capacity: "Deck Commander",
       theme: "Final Fantasy - Vivi Ornitier",
       color: "Marrom, amarelo, roxo e detalhes vermelhos"
+    }
+  },
+  {
+    id: "prod_sahzs_chocobo_deckbox",
+    name: "Deckbox Sahz's Chocobo Final Fantasy MTG",
+    slug: "deckbox-sahzs-chocobo-final-fantasy-mtg",
+    description:
+      "Deck box tematica Sahz's Chocobo inspirada em Final Fantasy, com visual fofo de chocobo, tampa removivel e espaco para deck de Magic. Produto perfeito para Commander, colecionadores e jogadores que querem uma peca divertida na mesa.",
+    price: 13000,
+    category: "deck-boxes",
+    collection: "final-fantasy",
+    productType: "deck-box",
+    rating: 5,
+    reviewCount: 2,
+    stock: 5,
+    sku: "MTG-FF-CHOCOBO-001",
+    material: "Estrutura rigida personalizada com acabamento colorido",
+    compatibility: ["Magic", "Commander"],
+    tags: ["deck box", "sahz", "chocobo", "final fantasy", "commander", "magic", "colorida"],
+    images: [
+      {
+        src: "/images/products/sahzs-chocobo-deckbox/front.png",
+        alt: "Deckbox Sahz's Chocobo Final Fantasy MTG em vista frontal"
+      },
+      {
+        src: "/images/products/sahzs-chocobo-deckbox/open.png",
+        alt: "Deckbox Sahz's Chocobo aberta com cartas"
+      },
+      {
+        src: "/images/products/sahzs-chocobo-deckbox/side.png",
+        alt: "Deckbox Sahz's Chocobo em vista lateral"
+      },
+      {
+        src: "/images/products/sahzs-chocobo-deckbox/table.png",
+        alt: "Deckbox Sahz's Chocobo sobre mesa com cartas Magic"
+      }
+    ],
+    addOnGroups: [
+      {
+        id: "sahzs-chocobo-color",
+        title: "Escolha a cor",
+        description: "Selecione a cor da sua deck box Chocobo. O valor de R$ 130,00 permanece o mesmo para qualquer cor.",
+        selection: "single",
+        allowNone: false,
+        defaultSelectedOptionId: "sahzs-chocobo-yellow",
+        options: [
+          {
+            id: "sahzs-chocobo-yellow",
+            label: "Amarelo classico",
+            description: "Cor inspirada no Chocobo das fotos.",
+            price: 0
+          },
+          {
+            id: "sahzs-chocobo-black",
+            label: "Preto",
+            description: "Opcao escura para combinar com decks e sleeves pretos.",
+            price: 0
+          },
+          {
+            id: "sahzs-chocobo-white",
+            label: "Branco",
+            description: "Visual claro e limpo para uma colecao mais luminosa.",
+            price: 0
+          },
+          {
+            id: "sahzs-chocobo-blue",
+            label: "Azul",
+            description: "Cor fria para jogadores de controle e decks azuis.",
+            price: 0
+          },
+          {
+            id: "sahzs-chocobo-red",
+            label: "Vermelho",
+            description: "Opcao vibrante para decks agressivos e tematicos.",
+            price: 0
+          },
+          {
+            id: "sahzs-chocobo-green",
+            label: "Verde",
+            description: "Cor natural para decks de ramp, criaturas e Commander verde.",
+            price: 0
+          },
+          {
+            id: "sahzs-chocobo-purple",
+            label: "Roxo",
+            description: "Opcao premium com clima magico e colecionavel.",
+            price: 0
+          }
+        ]
+      }
+    ],
+    isFeatured: true,
+    isNew: true,
+    tone: "from-yellow-300/35 via-zinc-950 to-gold/25",
+    dimensions: { width: "Personalizado", height: "Personalizado", depth: "Personalizado", weight: "Sob consulta" },
+    specs: [
+      "Deck box tematica Sahz's Chocobo Final Fantasy",
+      "Tampa removivel com visual de chocobo",
+      "Espaco interno para deck de Magic",
+      "Opcao de escolher a cor antes de adicionar ao carrinho",
+      "Preco unico de R$ 130,00"
+    ],
+    accessory: {
+      material: "Estrutura rigida personalizada",
+      dimensions: "Personalizado",
+      capacity: "Deck Commander",
+      theme: "Final Fantasy - Chocobo",
+      color: "Amarelo, preto, branco, azul, vermelho, verde ou roxo"
     }
   },
   {
