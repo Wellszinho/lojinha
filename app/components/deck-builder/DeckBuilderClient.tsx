@@ -2556,7 +2556,7 @@ function ArenaDuel({
             handCount={arena.playerHand.length}
           />
 
-          <div className="absolute bottom-3 left-1/2 z-[70] h-[250px] min-w-[880px] -translate-x-1/2 pointer-events-auto sm:h-[300px]">
+          <div className="absolute bottom-1 left-1/2 z-[70] h-[214px] min-w-[720px] -translate-x-1/2 pointer-events-auto sm:h-[248px] lg:min-w-[780px]">
             <div className="relative h-full">
               {arena.playerHand.map((card, index) => (
                 <OpeningHandCardView
@@ -2565,6 +2565,7 @@ function ArenaDuel({
                   index={index}
                   total={arena.playerHand.length}
                   compact
+                  arenaHand
                   draggable={isPlayerTurn}
                   isDragging={draggingCardIndex === index}
                   onDragStart={() => setDraggingCardIndex(index)}
@@ -2875,7 +2876,7 @@ function ArenaZone({
   const creatureCards = battlefield.filter((card) => !card.isManaSource);
 
   return (
-    <section className={cn("pointer-events-none relative z-10 grid gap-3 p-4", opponent ? "min-h-[270px] content-start pt-24" : "min-h-[360px] content-end pb-[270px] sm:pb-[320px]")}>
+    <section className={cn("pointer-events-none relative z-10 grid gap-3 p-4", opponent ? "min-h-[270px] content-start pt-24" : "min-h-[440px] content-start pt-7 pb-[218px] sm:pb-[252px]")}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-black uppercase tracking-[.22em] text-gold">{title}</h3>
@@ -3060,6 +3061,7 @@ function OpeningHandCardView({
   index,
   total,
   compact = false,
+  arenaHand = false,
   draggable = false,
   isDragging = false,
   onDragStart,
@@ -3070,6 +3072,7 @@ function OpeningHandCardView({
   index: number;
   total: number;
   compact?: boolean;
+  arenaHand?: boolean;
   draggable?: boolean;
   isDragging?: boolean;
   onDragStart?: () => void;
@@ -3080,10 +3083,10 @@ function OpeningHandCardView({
   const [cardImage, setCardImage] = useState<string | null | undefined>(() => cardImageCache.get(card.name));
   const theme = getOpeningHandTheme(card.section);
   const center = (total - 1) / 2;
-  const angle = isHovered ? 0 : (index - center) * (compact ? 6 : 7);
-  const offset = (index - center) * (compact ? 82 : 112);
-  const lift = isHovered ? (compact ? -24 : -50) : Math.abs(index - center) * (compact ? 7 : 12);
-  const scale = isHovered ? (compact ? 1.16 : 1.24) : 1;
+  const angle = isHovered ? 0 : (index - center) * (arenaHand ? 5 : compact ? 6 : 7);
+  const offset = (index - center) * (arenaHand ? 72 : compact ? 82 : 112);
+  const lift = isHovered ? (arenaHand ? -18 : compact ? -24 : -50) : Math.abs(index - center) * (arenaHand ? 5 : compact ? 7 : 12);
+  const scale = isHovered ? (arenaHand ? 1.12 : compact ? 1.16 : 1.24) : 1;
 
   useEffect(() => {
     let cancelled = false;
@@ -3139,7 +3142,11 @@ function OpeningHandCardView({
       tabIndex={0}
       className={cn(
         "absolute left-1/2 rounded-[16px] text-[#17130d] outline-none shadow-[0_28px_42px_rgba(0,0,0,.58)] transition-[transform,filter,box-shadow,opacity] duration-700 ease-out will-change-transform hover:shadow-[0_34px_70px_rgba(0,0,0,.82)] focus:shadow-[0_34px_70px_rgba(0,0,0,.82)]",
-        compact ? "bottom-0 h-[232px] w-[166px] sm:h-[270px] sm:w-[194px]" : "bottom-[8%] h-[360px] w-[258px] sm:h-[430px] sm:w-[308px]",
+        arenaHand
+          ? "bottom-0 h-[202px] w-[144px] sm:h-[238px] sm:w-[170px]"
+          : compact
+            ? "bottom-0 h-[232px] w-[166px] sm:h-[270px] sm:w-[194px]"
+            : "bottom-[8%] h-[360px] w-[258px] sm:h-[430px] sm:w-[308px]",
         draggable && "cursor-pointer active:cursor-grabbing",
         isDragging && "opacity-45"
       )}
