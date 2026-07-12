@@ -26,7 +26,8 @@ function getIdentityQuery(identity: string) {
   const cleanIdentity = identity.replace(/[^WUBRGC]/gi, "").toLowerCase();
   if (!cleanIdentity) return "";
   if (cleanIdentity === "c") return "id:c";
-  return `id>=${cleanIdentity.replaceAll("c", "")}`;
+  const orderedIdentity = ["w", "u", "b", "r", "g"].filter((color) => cleanIdentity.includes(color)).join("");
+  return orderedIdentity ? `id=${orderedIdentity}` : "";
 }
 
 function getNameQuery(search: string) {
@@ -84,7 +85,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const identity = searchParams.get("identity") ?? "";
   const search = searchParams.get("search") ?? "";
-  const query = ["is:commander", "legal:commander", "game:paper", search ? "" : getIdentityQuery(identity), getNameQuery(search)]
+  const query = ["is:commander", "legal:commander", "game:paper", getIdentityQuery(identity), getNameQuery(search)]
     .filter(Boolean)
     .join(" ");
 

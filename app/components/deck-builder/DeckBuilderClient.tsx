@@ -61,6 +61,11 @@ type DeckListEntry = {
   section: string;
 };
 
+type ChoiceOption = {
+  label: string;
+  description: string;
+};
+
 type OpeningHandCard = {
   name: string;
   section: string;
@@ -142,9 +147,9 @@ type ScryfallCommanderCard = {
 const wizardSections = [
   { title: "Identidade de cores", description: "Escolha as cores ou deixe a IA sugerir com base no plano do deck." },
   { title: "Orcamento", description: "Defina quanto o deck pode custar e se existe teto real de investimento." },
-  { title: "Experiencia", description: "Ajuste a lista para iniciante, intermediario, avancado ou competitivo." },
-  { title: "Complexidade", description: "Escolha se o deck precisa ser simples ou extremamente tecnico." },
-  { title: "Comandante", description: "Veja todos os comandantes que contem as cores escolhidas." },
+  { title: "Experiencia", description: "Defina para quem o deck sera construido." },
+  { title: "Complexidade", description: "Defina o quao dificil sera pilotar o deck." },
+  { title: "Comandante", description: "Veja apenas comandantes da identidade de cores escolhida." },
   { title: "Arquetipo", description: "Defina uma ou mais linhas principais do deck." },
   { title: "Estilo", description: "Modele como o deck deve se comportar na mesa." },
   { title: "Preferencias", description: "Ajuste combos, cartas caras, proxies, banlist e power level." },
@@ -155,9 +160,51 @@ const identityGroups: ColorIdentityGroup[] = ["Monocolor", "Duas cores", "Tres c
 
 const budgetPresets = [10000, 30000, 50000, 80000, 100000, 200000, 300000, 500000];
 
-const playerExperienceOptions = ["Nunca joguei", "Iniciante", "Intermediario", "Avancado", "Competitivo"];
+const playerExperienceOptions: ChoiceOption[] = [
+  {
+    label: "Nunca joguei",
+    description: "Regras basicas, cartas intuitivas e estrategias faceis de aprender enquanto joga."
+  },
+  {
+    label: "Iniciante",
+    description: "Estrategias acessiveis, sinergias claras e cartas que ajudam a desenvolver os fundamentos do jogo."
+  },
+  {
+    label: "Intermediario",
+    description: "Mais interacoes, sinergias e decisoes estrategicas, exigindo boa compreensao das regras."
+  },
+  {
+    label: "Avancado",
+    description: "Estrategias sofisticadas, interacoes complexas e decisoes que recompensam experiencia e dominio do jogo."
+  },
+  {
+    label: "Competitivo",
+    description: "Maxima eficiencia e otimizacao, com combos, respostas precisas e foco em vencer contra mesas de alto nivel."
+  }
+];
 
-const complexityOptions = ["Muito simples", "Facil", "Media", "Dificil", "Extremamente tecnica"];
+const complexityOptions: ChoiceOption[] = [
+  {
+    label: "Muito simples",
+    description: "Estrategias diretas, cartas intuitivas e poucas interacoes complexas. Ideal para iniciantes."
+  },
+  {
+    label: "Facil",
+    description: "Estrategias simples, com algumas sinergias e decisoes, mas sem exigir conhecimento avancado."
+  },
+  {
+    label: "Media",
+    description: "Equilibrio entre acessibilidade e profundidade, com boas sinergias, interacoes e decisoes estrategicas."
+  },
+  {
+    label: "Dificil",
+    description: "Estrategias complexas, multiplas interacoes e decisoes que exigem bom conhecimento do deck e do jogo."
+  },
+  {
+    label: "Extremamente tecnica",
+    description: "Linhas avancadas, stacks complexas, sequenciamento preciso, combos e decisoes que exigem dominio do deck."
+  }
+];
 
 const optimizationOptions = [
   "Mais barato",
@@ -321,6 +368,14 @@ function getIdentityIdForCommanderColors(colors: ManaColor[]) {
       (identity) => identity.colors.length === normalized.length && normalized.every((color) => identity.colors.includes(color))
     )?.id ?? "wubrg"
   );
+}
+
+function commanderMatchesIdentity(identity: ColorIdentity, commander: CommanderProfile) {
+  const targetColors = commanderColorOrder.filter((color) => identity.colors.includes(color));
+  const commanderColors = commanderColorOrder.filter((color) => commander.identity.includes(color));
+
+  if (identity.colors.includes("C")) return commanderColors.length === 0 || commander.identity.includes("C");
+  return commanderColors.length === targetColors.length && targetColors.every((color) => commanderColors.includes(color));
 }
 
 function mergeCommanderPools(localCommanders: CommanderProfile[], remoteCommanders: CommanderProfile[]) {
@@ -1249,6 +1304,7 @@ export function DeckBuilderClient() {
     const timeout = window.setTimeout(() => {
       setCommanderSearchStatus("loading");
       const params = new URLSearchParams({
+        identity: activeIdentity.code,
         search: commanderSearch
       });
 
@@ -1272,13 +1328,14 @@ export function DeckBuilderClient() {
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [commanderSearch, shouldLoadCommanders]);
+  }, [activeIdentity.code, commanderSearch, shouldLoadCommanders]);
 
   const compatibleCommanders = useMemo(() => {
     const search = normalizeCommanderSearch(commanderSearch);
-    const searched = search ? commanderCandidates.filter((commander) => commander.name.toLowerCase().includes(search)) : commanderCandidates;
+    const pool = commanderCandidates.filter((commander) => commanderMatchesIdentity(activeIdentity, commander));
+    const searched = search ? pool.filter((commander) => commander.name.toLowerCase().includes(search)) : pool;
     return sortCommanders(searched, activeCommanderFilter);
-  }, [activeCommanderFilter, commanderCandidates, commanderSearch]);
+  }, [activeCommanderFilter, activeIdentity, commanderCandidates, commanderSearch]);
 
   const selectedCommander = useMemo(
     () => commanderCandidates.find((commander) => commander.name === selectedCommanderName),
@@ -1286,7 +1343,8 @@ export function DeckBuilderClient() {
   );
 
   const recommendedCommander = compatibleCommanders[0];
-  const displayCommander = selectedCommander ?? recommendedCommander;
+  const displayCommander =
+    selectedCommander && commanderMatchesIdentity(activeIdentity, selectedCommander) ? selectedCommander : recommendedCommander;
 
   const estimatedPower = estimatePower(displayCommander, preferences, selectedArchetypes, complexity);
   const deckSections = buildDeckSections(displayCommander, activeIdentity, selectedArchetypes, budgetUnlimited);
@@ -1668,25 +1726,21 @@ function BudgetSection({
   );
 }
 
-function ChoiceCards({ options, selected, onSelect }: { options: string[]; selected: string; onSelect: (value: string) => void }) {
+function ChoiceCards({ options, selected, onSelect }: { options: ChoiceOption[]; selected: string; onSelect: (value: string) => void }) {
   return (
     <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
       {options.map((option) => (
         <button
-          key={option}
+          key={option.label}
           type="button"
-          onClick={() => onSelect(option)}
+          onClick={() => onSelect(option.label)}
           className={cn(
             "min-h-24 rounded-premium border p-4 text-left transition",
-            selected === option ? "border-gold/50 bg-gold/10 text-frost" : "border-white/10 bg-black/20 text-mist hover:text-frost"
+            selected === option.label ? "border-gold/50 bg-gold/10 text-frost" : "border-white/10 bg-black/20 text-mist hover:text-frost"
           )}
         >
-          <strong>{option}</strong>
-          <span className="mt-2 block text-sm leading-6 text-mist">
-            {option.includes("tecn") || option.includes("Competitivo")
-              ? "A IA pode usar linhas mais exigentes, stacks e decisoes de sequencing."
-              : "A IA prioriza clareza, consistencia e cartas faceis de entender."}
-          </span>
+          <strong>{option.label}</strong>
+          <span className="mt-2 block text-sm leading-6 text-mist">{option.description}</span>
         </button>
       ))}
     </section>
@@ -1720,18 +1774,18 @@ function CommanderSection({
     <section className="grid gap-5">
       <div className="flex flex-col gap-3 rounded-premium border border-white/10 bg-black/20 p-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <p className="text-sm text-mist">Todos os comandantes do Commander</p>
+          <p className="text-sm text-mist">Comandantes da identidade escolhida</p>
           <div className="mt-1 flex items-center gap-3">
             <strong className="text-frost">{compatibleCommanders.length} encontrados</strong>
             <ManaPips colors={activeIdentity.colors} />
           </div>
-          <p className="mt-1 text-xs text-mist">Identidade atual: {activeIdentity.name}. Ela muda automaticamente ao escolher um comandante.</p>
+          <p className="mt-1 text-xs text-mist">Identidade atual: {activeIdentity.name}. Use a busca para achar um comandante especifico dentro dessas cores.</p>
           <p className="mt-2 text-xs text-mist">
             {commanderSearchStatus === "loading"
               ? "Carregando base completa da Scryfall..."
               : commanderSearchStatus === "error"
                 ? "Busca viva indisponivel agora; exibindo base local."
-                : "Base completa da Scryfall combinada com favoritos locais."}
+                : "Base da Scryfall filtrada pela identidade escolhida, combinada com favoritos locais."}
           </p>
         </div>
         <Button type="button" variant="secondary" onClick={surpriseMe}>
@@ -2050,19 +2104,7 @@ function ResultSection({
               </summary>
               <div className="mt-4 grid gap-3">
                 {section.cards.map((card) => (
-                  <div key={`${section.title}-${card.name}`} className="rounded-[7px] border border-white/10 bg-white/[.04] p-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <strong className="text-frost">{card.name}</strong>
-                      {card.expensive ? <span className="rounded-full bg-gold/10 px-2 py-1 text-xs font-bold text-gold">carta cara</span> : null}
-                    </div>
-                    <p className="mt-2 text-sm leading-6 text-mist">{card.reason}</p>
-                    {card.budgetAlternative || card.premiumAlternative ? (
-                      <div className="mt-3 grid gap-2 text-xs text-mist sm:grid-cols-2">
-                        {card.budgetAlternative ? <span>Economica: <strong className="text-frost">{card.budgetAlternative}</strong></span> : null}
-                        {card.premiumAlternative ? <span>Premium: <strong className="text-frost">{card.premiumAlternative}</strong></span> : null}
-                      </div>
-                    ) : null}
-                  </div>
+                  <DeckCardListItem key={`${section.title}-${card.name}`} card={card} sectionTitle={section.title} />
                 ))}
               </div>
             </details>
@@ -2210,6 +2252,40 @@ function SummaryLine({ label, value, detail }: { label: string; value: string; d
         {value}
         {detail}
       </span>
+    </div>
+  );
+}
+
+function DeckCardListItem({ card, sectionTitle }: { card: DeckCardLine; sectionTitle: string }) {
+  const [showPreview, setShowPreview] = useState(false);
+
+  return (
+    <div
+      className="group relative rounded-[7px] border border-white/10 bg-white/[.04] p-3 transition hover:border-gold/35 hover:bg-gold/[.045]"
+      onMouseEnter={() => setShowPreview(true)}
+      onMouseLeave={() => setShowPreview(false)}
+      onFocus={() => setShowPreview(true)}
+      onBlur={() => setShowPreview(false)}
+      tabIndex={0}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <strong className="text-frost underline decoration-gold/35 underline-offset-4 transition group-hover:text-gold">
+          {card.name}
+        </strong>
+        {card.expensive ? <span className="rounded-full bg-gold/10 px-2 py-1 text-xs font-bold text-gold">carta cara</span> : null}
+      </div>
+      <p className="mt-2 text-sm leading-6 text-mist">{card.reason}</p>
+      {card.budgetAlternative || card.premiumAlternative ? (
+        <div className="mt-3 grid gap-2 text-xs text-mist sm:grid-cols-2">
+          {card.budgetAlternative ? <span>Economica: <strong className="text-frost">{card.budgetAlternative}</strong></span> : null}
+          {card.premiumAlternative ? <span>Premium: <strong className="text-frost">{card.premiumAlternative}</strong></span> : null}
+        </div>
+      ) : null}
+      {showPreview ? (
+        <div className="pointer-events-none absolute left-1/2 top-1/2 z-[90] hidden w-[232px] -translate-y-1/2 rounded-[12px] border border-gold/45 bg-black/80 p-2 shadow-[0_24px_80px_rgba(0,0,0,.72),0_0_38px_rgba(215,180,106,.24)] xl:block">
+          <OpeningHandCardPreview name={card.name} section={sectionTitle} />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -3156,9 +3232,11 @@ function OpeningHandCardView({
         transformOrigin: "bottom center"
       }}
     >
-      <span className="pointer-events-none absolute left-3 top-3 z-10 grid size-7 place-items-center rounded-full border border-black/50 bg-[#efe6cf] text-xs font-black text-[#17130d] shadow-[0_4px_14px_rgba(0,0,0,.35)]">
-        {getArenaCardCost(card)}
-      </span>
+      {!arenaHand ? (
+        <span className="pointer-events-none absolute left-3 top-3 z-10 grid size-7 place-items-center rounded-full border border-black/50 bg-[#efe6cf] text-xs font-black text-[#17130d] shadow-[0_4px_14px_rgba(0,0,0,.35)]">
+          {getArenaCardCost(card)}
+        </span>
+      ) : null}
       {cardImage ? (
         <img
           src={cardImage}
@@ -3177,9 +3255,11 @@ function OpeningHandCardView({
           <div className="flex h-full flex-col rounded-[8px] border border-black/70 bg-[#efe6cf] p-2">
             <div className="flex min-h-9 items-center justify-between gap-2 rounded-[5px] border border-black/30 bg-[#d9ccb0] px-2 py-1">
               <strong className="truncate text-[13px] leading-tight">{card.name}</strong>
-              <span className="grid size-5 shrink-0 place-items-center rounded-full border border-black/40 text-[10px] font-black" style={{ background: theme.badge }}>
-                {index + 1}
-              </span>
+              {!arenaHand ? (
+                <span className="grid size-5 shrink-0 place-items-center rounded-full border border-black/40 text-[10px] font-black" style={{ background: theme.badge }}>
+                  {index + 1}
+                </span>
+              ) : null}
             </div>
 
             <div className="mt-2 grid flex-1 place-items-center overflow-hidden rounded-[6px] border-2 border-black/70" style={{ background: theme.art }}>
