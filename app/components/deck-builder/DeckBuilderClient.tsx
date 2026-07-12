@@ -73,6 +73,33 @@ type DeckSimulationStats = {
   lands: number;
 };
 
+type ArenaPhase = "closed" | "intro" | "duel";
+
+type ArenaPermanent = OpeningHandCard & {
+  id: string;
+  power: number;
+  toughness: number;
+  isManaSource: boolean;
+};
+
+type ArenaState = {
+  playerLife: number;
+  botLife: number;
+  turn: number;
+  activeTurn: "player" | "bot";
+  playerHand: OpeningHandCard[];
+  botHand: OpeningHandCard[];
+  playerLibrary: OpeningHandCard[];
+  botLibrary: OpeningHandCard[];
+  playerBattlefield: ArenaPermanent[];
+  botBattlefield: ArenaPermanent[];
+  playerDrewThisTurn: boolean;
+  playerLandPlayedThisTurn: boolean;
+  playerManaSpent: number;
+  log: string[];
+  winner?: "player" | "bot";
+};
+
 type ScryfallCardResponse = {
   image_uris?: {
     normal?: string;
@@ -689,6 +716,225 @@ async function fetchScryfallCardImage(cardName: string) {
   return null;
 }
 
+function getArenaCardCost(card: OpeningHandCard) {
+  if (card.section === "Terrenos") return 0;
+  if (card.section === "Ramp" || card.section === "Remocoes" || card.section === "Protecoes") return 2;
+  if (card.section === "Draw" || card.section === "Tutores" || card.section === "Utilidades") return 3;
+  if (card.section === "Combos") return 4;
+  if (card.section === "Board Wipes") return 5;
+  if (card.section === "Win Conditions") return 6;
+  return 3;
+}
+
+function getArenaCardPower(card: OpeningHandCard) {
+  if (card.section === "Terrenos") return 0;
+  if (card.section === "Ramp" || card.section === "Draw" || card.section === "Protecoes") return 1;
+  if (card.section === "Remocoes" || card.section === "Tutores") return 2;
+  if (card.section === "Utilidades" || card.section === "Combos") return 3;
+  if (card.section === "Win Conditions") return 6;
+  return 2;
+}
+
+function makeArenaPermanent(card: OpeningHandCard, owner: "player" | "bot", index: number): ArenaPermanent {
+  const power = getArenaCardPower(card);
+  return {
+    ...card,
+    id: `${owner}-${card.name}-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+    power,
+    toughness: Math.max(1, power + 1),
+    isManaSource: card.section === "Terrenos" || card.section === "Ramp"
+  };
+}
+
+function getManaSources(battlefield: ArenaPermanent[]) {
+  return battlefield.filter((card) => card.isManaSource).length;
+}
+
+function createArenaState(deckList: DeckListEntry[]): ArenaState {
+  const playerLibrary = shuffleCards(expandDeckEntries(deckList));
+  const botLibrary = shuffleCards(expandDeckEntries(deckList));
+
+  return {
+    playerLife: 40,
+    botLife: 40,
+    turn: 1,
+    activeTurn: "player",
+    playerHand: playerLibrary.slice(0, 7),
+    botHand: botLibrary.slice(0, 7),
+    playerLibrary: playerLibrary.slice(7),
+    botLibrary: botLibrary.slice(7),
+    playerBattlefield: [],
+    botBattlefield: [],
+    playerDrewThisTurn: false,
+    playerLandPlayedThisTurn: false,
+    playerManaSpent: 0,
+    log: [
+      "A arena abriu. Voce esta no play.",
+      "Bot do Galo comprou sete cartas e aguarda sua primeira jogada."
+    ]
+  };
+}
+
+function drawArenaCard(state: ArenaState, owner: "player" | "bot"): { state: ArenaState; drawn?: OpeningHandCard } {
+  const libraryKey = owner === "player" ? "playerLibrary" : "botLibrary";
+  const handKey = owner === "player" ? "playerHand" : "botHand";
+  const library = state[libraryKey];
+  const drawn = library[0];
+
+  if (!drawn) {
+    return {
+      state: {
+        ...state,
+        winner: (owner === "player" ? "bot" : "player") as "player" | "bot",
+        log: [`${owner === "player" ? "Voce" : "Bot do Galo"} tentou comprar de um grimorio vazio.`, ...state.log]
+      },
+      drawn: undefined
+    };
+  }
+
+  return {
+    state: {
+      ...state,
+      [libraryKey]: library.slice(1),
+      [handKey]: [...state[handKey], drawn]
+    },
+    drawn
+  };
+}
+
+function castArenaCard(state: ArenaState, owner: "player" | "bot", cardIndex: number): ArenaState {
+  const isPlayer = owner === "player";
+  const handKey = isPlayer ? "playerHand" : "botHand";
+  const battlefieldKey = isPlayer ? "playerBattlefield" : "botBattlefield";
+  const opponentBattlefieldKey = isPlayer ? "botBattlefield" : "playerBattlefield";
+  const opponentLifeKey = isPlayer ? "botLife" : "playerLife";
+  const label = isPlayer ? "Voce" : "Bot do Galo";
+  const hand = state[handKey];
+  const card = hand[cardIndex];
+  if (!card) return state;
+
+  const remainingHand = hand.filter((_, index) => index !== cardIndex);
+  const permanent = makeArenaPermanent(card, owner, state[battlefieldKey].length);
+
+  if (card.section === "Remocoes") {
+    const targetIndex = state[opponentBattlefieldKey].findIndex((item) => item.section !== "Terrenos");
+    if (targetIndex >= 0) {
+      const target = state[opponentBattlefieldKey][targetIndex];
+      return {
+        ...state,
+        [handKey]: remainingHand,
+        [opponentBattlefieldKey]: state[opponentBattlefieldKey].filter((_, index) => index !== targetIndex),
+        log: [`${label} conjurou ${card.name} e removeu ${target.name}.`, ...state.log]
+      };
+    }
+
+    return {
+      ...state,
+      [handKey]: remainingHand,
+      [opponentLifeKey]: Math.max(0, state[opponentLifeKey] - 2),
+      log: [`${label} conjurou ${card.name} e causou 2 de dano direto.`, ...state.log]
+    };
+  }
+
+  if (card.section === "Board Wipes") {
+    return {
+      ...state,
+      [handKey]: remainingHand,
+      playerBattlefield: state.playerBattlefield.filter((item) => item.section === "Terrenos"),
+      botBattlefield: state.botBattlefield.filter((item) => item.section === "Terrenos"),
+      log: [`${label} limpou a mesa com ${card.name}.`, ...state.log]
+    };
+  }
+
+  if (card.section === "Draw") {
+    const firstDraw = drawArenaCard({ ...state, [handKey]: remainingHand }, owner);
+    const secondDraw = drawArenaCard(firstDraw.state, owner);
+    return {
+      ...secondDraw.state,
+      [battlefieldKey]: [...secondDraw.state[battlefieldKey], permanent],
+      log: [`${label} conjurou ${card.name} e comprou cartas.`, ...secondDraw.state.log]
+    };
+  }
+
+  return {
+    ...state,
+    [handKey]: remainingHand,
+    [battlefieldKey]: [...state[battlefieldKey], permanent],
+    log: [`${label} colocou ${card.name} na mesa.`, ...state.log]
+  };
+}
+
+function attackWithBoard(state: ArenaState, owner: "player" | "bot"): ArenaState {
+  const isPlayer = owner === "player";
+  const battlefield = isPlayer ? state.playerBattlefield : state.botBattlefield;
+  const attackers = battlefield.filter((card) => card.section !== "Terrenos");
+  const damage = attackers.reduce((sum, card) => sum + Math.max(1, card.power), 0);
+
+  if (!damage) {
+    return {
+      ...state,
+      log: [`${isPlayer ? "Voce" : "Bot do Galo"} ainda nao tem atacantes na mesa.`, ...state.log]
+    };
+  }
+
+  const lifeKey = isPlayer ? "botLife" : "playerLife";
+  const nextLife = Math.max(0, state[lifeKey] - damage);
+  return {
+    ...state,
+    [lifeKey]: nextLife,
+    winner: nextLife <= 0 ? owner : state.winner,
+    log: [`${isPlayer ? "Voce atacou" : "Bot do Galo atacou"} causando ${damage} de dano.`, ...state.log]
+  };
+}
+
+function playFirstLand(state: ArenaState, owner: "player" | "bot"): ArenaState {
+  const isPlayer = owner === "player";
+  const handKey = isPlayer ? "playerHand" : "botHand";
+  const battlefieldKey = isPlayer ? "playerBattlefield" : "botBattlefield";
+  const landIndex = state[handKey].findIndex((card) => card.section === "Terrenos");
+  if (landIndex < 0) return state;
+
+  const land = state[handKey][landIndex];
+  return {
+    ...state,
+    [handKey]: state[handKey].filter((_, index) => index !== landIndex),
+    [battlefieldKey]: [...state[battlefieldKey], makeArenaPermanent(land, owner, state[battlefieldKey].length)],
+    log: [`${isPlayer ? "Voce baixou" : "Bot do Galo baixou"} ${land.name}.`, ...state.log]
+  };
+}
+
+function runBotTurn(state: ArenaState): ArenaState {
+  let nextState: ArenaState = {
+    ...state,
+    activeTurn: "bot",
+    log: [`Turno do Bot do Galo.`, ...state.log]
+  };
+
+  const drawResult = drawArenaCard(nextState, "bot");
+  nextState = {
+    ...drawResult.state,
+    log: [drawResult.drawn ? `Bot do Galo comprou uma carta.` : "Bot do Galo nao conseguiu comprar.", ...drawResult.state.log]
+  };
+
+  nextState = playFirstLand(nextState, "bot");
+
+  const botMana = getManaSources(nextState.botBattlefield);
+  const castIndex = nextState.botHand.findIndex((card) => card.section !== "Terrenos" && getArenaCardCost(card) <= botMana);
+  if (castIndex >= 0) nextState = castArenaCard(nextState, "bot", castIndex);
+
+  if (nextState.turn > 1) nextState = attackWithBoard(nextState, "bot");
+
+  return {
+    ...nextState,
+    turn: nextState.turn + 1,
+    activeTurn: "player",
+    playerDrewThisTurn: false,
+    playerLandPlayedThisTurn: false,
+    playerManaSpent: 0,
+    log: [`Sua prioridade.`, ...nextState.log]
+  };
+}
+
 export function DeckBuilderClient() {
   const [activeSection, setActiveSection] = useState(0);
   const [colorMode, setColorMode] = useState<"choose" | "auto">("choose");
@@ -1283,8 +1529,15 @@ function ResultSection({
   const [exportStatus, setExportStatus] = useState("");
   const [openingHand, setOpeningHand] = useState<OpeningHandCard[]>([]);
   const [simulationStats, setSimulationStats] = useState<DeckSimulationStats | null>(null);
-  const [isHandOverlayOpen, setIsHandOverlayOpen] = useState(false);
+  const [arenaPhase, setArenaPhase] = useState<ArenaPhase>("closed");
+  const [arenaState, setArenaState] = useState<ArenaState | null>(null);
   const deckList = useMemo(() => buildDeckList(deckSections, activeIdentity), [activeIdentity, deckSections]);
+
+  useEffect(() => {
+    if (arenaPhase !== "intro") return;
+    const timer = window.setTimeout(() => setArenaPhase("duel"), 2400);
+    return () => window.clearTimeout(timer);
+  }, [arenaPhase]);
 
   async function handleExport(option: string) {
     const slug =
@@ -1339,10 +1592,68 @@ function ResultSection({
   }
 
   function handleOpeningHandTest() {
+    const nextArena = createArenaState(deckList);
     setHandTested(true);
     setSimulationStats(simulateOpeningHands(deckList));
-    setOpeningHand(drawOpeningHand(deckList));
-    setIsHandOverlayOpen(true);
+    setOpeningHand(nextArena.playerHand);
+    setArenaState(nextArena);
+    setArenaPhase("intro");
+  }
+
+  function closeArena() {
+    setArenaPhase("closed");
+  }
+
+  function handleArenaDraw() {
+    setArenaState((current) => {
+      if (!current || current.activeTurn !== "player" || current.winner) return current;
+      if (current.playerDrewThisTurn) return { ...current, log: ["Voce ja comprou neste turno.", ...current.log] };
+
+      const result = drawArenaCard(current, "player");
+      return {
+        ...result.state,
+        playerDrewThisTurn: true,
+        log: [result.drawn ? `Voce comprou ${result.drawn.name}.` : "Voce nao conseguiu comprar.", ...result.state.log]
+      };
+    });
+  }
+
+  function handleArenaLand() {
+    setArenaState((current) => {
+      if (!current || current.activeTurn !== "player" || current.winner) return current;
+      if (current.playerLandPlayedThisTurn) return { ...current, log: ["Voce ja baixou terreno neste turno.", ...current.log] };
+      if (!current.playerHand.some((card) => card.section === "Terrenos")) return { ...current, log: ["Nao ha terreno na sua mao.", ...current.log] };
+
+      const nextState = playFirstLand(current, "player");
+      return { ...nextState, playerLandPlayedThisTurn: true };
+    });
+  }
+
+  function handleArenaCast() {
+    setArenaState((current) => {
+      if (!current || current.activeTurn !== "player" || current.winner) return current;
+      const availableMana = getManaSources(current.playerBattlefield) - current.playerManaSpent;
+      const cardIndex = current.playerHand.findIndex((card) => card.section !== "Terrenos" && getArenaCardCost(card) <= availableMana);
+      if (cardIndex < 0) return { ...current, log: [`Mana disponivel: ${Math.max(0, availableMana)}. Nenhuma magica pode ser conjurada agora.`, ...current.log] };
+
+      const card = current.playerHand[cardIndex];
+      const nextState = castArenaCard(current, "player", cardIndex);
+      return { ...nextState, playerManaSpent: current.playerManaSpent + getArenaCardCost(card) };
+    });
+  }
+
+  function handleArenaAttack() {
+    setArenaState((current) => {
+      if (!current || current.activeTurn !== "player" || current.winner) return current;
+      return attackWithBoard(current, "player");
+    });
+  }
+
+  function handleArenaPass() {
+    setArenaState((current) => {
+      if (!current || current.activeTurn !== "player" || current.winner) return current;
+      return runBotTurn({ ...current, log: ["Voce passou o turno.", ...current.log] });
+    });
   }
 
   return (
@@ -1450,27 +1761,34 @@ function ResultSection({
           </div>
           <Button type="button" onClick={handleOpeningHandTest}>
             <Play className="size-4" />
-            {handTested ? "Testar outra mao" : "Testar Mao Inicial"}
+            {handTested ? "Entrar em outra Arena" : "Entrar na Arena"}
           </Button>
         </div>
 
         <div className="mt-4 rounded-[7px] border border-white/10 bg-black/20 p-4">
           <p className="text-sm leading-6 text-mist">
-            Ao testar, a mao abre em tela cheia com as 7 cartas reais, fundo desfocado e as chances no topo.
+            Ao testar, voce entra em uma arena com transicao cinematografica, mao real, vida, campo, turno e um bot basico.
           </p>
-          {handTested ? (
-            <button type="button" onClick={() => setIsHandOverlayOpen(true)} className="mt-3 text-sm font-black text-gold underline-offset-4 hover:underline">
-              Ver ultima mao simulada
+          {handTested && arenaState ? (
+            <button type="button" onClick={() => setArenaPhase("duel")} className="mt-3 text-sm font-black text-gold underline-offset-4 hover:underline">
+              Voltar para a ultima arena
             </button>
           ) : null}
         </div>
 
-        {isHandOverlayOpen ? (
-          <OpeningHandOverlay
-            hand={openingHand}
+        {arenaPhase !== "closed" && arenaState ? (
+          <ArenaOverlay
+            phase={arenaPhase}
+            arena={arenaState}
+            openingHand={openingHand}
             stats={simulationStats}
-            onClose={() => setIsHandOverlayOpen(false)}
+            onClose={closeArena}
             onTestAgain={handleOpeningHandTest}
+            onDraw={handleArenaDraw}
+            onPlayLand={handleArenaLand}
+            onCast={handleArenaCast}
+            onAttack={handleArenaAttack}
+            onPass={handleArenaPass}
           />
         ) : null}
       </Panel>
@@ -1537,16 +1855,30 @@ function HandStat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function OpeningHandOverlay({
-  hand,
+function ArenaOverlay({
+  phase,
+  arena,
+  openingHand,
   stats,
   onClose,
-  onTestAgain
+  onTestAgain,
+  onDraw,
+  onPlayLand,
+  onCast,
+  onAttack,
+  onPass
 }: {
-  hand: OpeningHandCard[];
+  phase: ArenaPhase;
+  arena: ArenaState;
+  openingHand: OpeningHandCard[];
   stats: DeckSimulationStats | null;
   onClose: () => void;
   onTestAgain: () => void;
+  onDraw: () => void;
+  onPlayLand: () => void;
+  onCast: () => void;
+  onAttack: () => void;
+  onPass: () => void;
 }) {
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -1565,49 +1897,49 @@ function OpeningHandOverlay({
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-[120] overflow-hidden bg-black/80 px-4 py-4 text-frost backdrop-blur-md sm:px-6 sm:py-6">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_18%,rgba(215,180,106,.2),transparent_30%),radial-gradient(circle_at_20%_80%,rgba(93,63,161,.2),transparent_28%)]" />
-      <div className="relative z-10 mx-auto flex h-full max-w-[1500px] flex-col">
-        <div className="rounded-[8px] border border-gold/25 bg-obsidian/85 p-4 shadow-[0_18px_60px_rgba(0,0,0,.45)]">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <span className="text-xs font-black uppercase tracking-[.22em] text-gold">Simulador de mao inicial</span>
-              <h3 className="mt-1 text-2xl font-black text-frost">Mesa de teste</h3>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Button type="button" onClick={onTestAgain}>
-                <Shuffle className="size-4" />
-                Testar outra mao
-              </Button>
-              <Button type="button" variant="secondary" onClick={onClose}>
-                <X className="size-4" />
-                Fechar
-              </Button>
-            </div>
-          </div>
+    <div className="fixed inset-0 z-[120] overflow-hidden bg-black/85 text-frost backdrop-blur-md">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_18%,rgba(215,180,106,.22),transparent_30%),radial-gradient(circle_at_20%_80%,rgba(93,63,161,.2),transparent_28%)]" />
+      {phase === "intro" ? (
+        <ArenaIntro openingHand={openingHand} onClose={onClose} />
+      ) : (
+        <ArenaDuel
+          arena={arena}
+          stats={stats}
+          onClose={onClose}
+          onTestAgain={onTestAgain}
+          onDraw={onDraw}
+          onPlayLand={onPlayLand}
+          onCast={onCast}
+          onAttack={onAttack}
+          onPass={onPass}
+        />
+      )}
+    </div>
+  );
+}
 
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            <HandStat label="Mulligan" value={stats ? `${stats.mulligan}%` : "--"} />
-            <HandStat label="Abrir ramp" value={stats ? `${stats.ramp}%` : "--"} />
-            <HandStat label="Abrir draw" value={stats ? `${stats.draw}%` : "--"} />
-            <HandStat label="Abrir terrenos" value={stats ? `${stats.lands}%` : "--"} />
-            <div className="rounded-[7px] border border-gold/30 bg-gold/10 p-3">
-              <span className="text-xs font-bold uppercase text-gold">Leitura da IA</span>
-              <strong className="mt-1 block text-sm text-frost">{getHandVerdict(stats)}</strong>
-            </div>
-          </div>
+function ArenaIntro({ openingHand, onClose }: { openingHand: OpeningHandCard[]; onClose: () => void }) {
+  return (
+    <div className="relative z-10 grid h-full place-items-center overflow-hidden px-6 text-center">
+      <button type="button" onClick={onClose} className="absolute right-5 top-5 grid size-10 place-items-center rounded-full border border-white/10 bg-black/40 text-mist transition hover:text-frost">
+        <X className="size-5" />
+      </button>
+      <div className="absolute left-1/2 top-1/2 size-[560px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-gold/20 bg-gold/5 shadow-[0_0_120px_rgba(215,180,106,.22)] animate-pulse" />
+      <div className="absolute left-1/2 top-1/2 size-[390px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-purple-400/20" />
+      <div className="relative">
+        <span className="text-xs font-black uppercase tracking-[.35em] text-gold">Magic The Galo Arena</span>
+        <h2 className="mt-4 text-4xl font-black text-frost sm:text-6xl">Preparando duelo</h2>
+        <p className="mx-auto mt-4 max-w-xl text-sm leading-6 text-mist">
+          O portal esta embaralhando sua mao, preparando o bot e abrindo a mesa de Commander.
+        </p>
+        <div className="mx-auto mt-8 h-2 max-w-md overflow-hidden rounded-full bg-white/10">
+          <div className="h-full w-2/3 rounded-full bg-gradient-to-r from-gold via-frost to-purple-300 shadow-[0_0_24px_rgba(215,180,106,.65)]" />
         </div>
-
-        <div className="relative mt-4 min-h-0 flex-1 rounded-[8px] border border-white/10 bg-[radial-gradient(circle_at_50%_30%,rgba(255,255,255,.08),transparent_28%),linear-gradient(145deg,rgba(14,17,22,.78),rgba(3,5,10,.9))] shadow-[inset_0_0_100px_rgba(0,0,0,.7)]">
-          <div className="absolute left-4 top-4 rounded-full border border-white/10 bg-black/35 px-3 py-1 text-xs font-black text-mist">
-            7 cartas
-          </div>
-          <div className="h-full overflow-x-auto overflow-y-visible">
-            <div className="relative mx-auto h-full min-h-[430px] min-w-[980px]">
-              {hand.map((card, index) => (
-                <OpeningHandCardView key={`${card.name}-${index}`} card={card} index={index} total={hand.length} />
-              ))}
-            </div>
+        <div className="mt-10 hidden h-60 min-w-[760px] sm:block">
+          <div className="relative mx-auto h-full">
+            {openingHand.map((card, index) => (
+              <OpeningHandCardView key={`${card.name}-intro-${index}`} card={card} index={index} total={openingHand.length} compact />
+            ))}
           </div>
         </div>
       </div>
@@ -1615,15 +1947,249 @@ function OpeningHandOverlay({
   );
 }
 
-function OpeningHandCardView({ card, index, total }: { card: OpeningHandCard; index: number; total: number }) {
+function ArenaDuel({
+  arena,
+  stats,
+  onClose,
+  onTestAgain,
+  onDraw,
+  onPlayLand,
+  onCast,
+  onAttack,
+  onPass
+}: {
+  arena: ArenaState;
+  stats: DeckSimulationStats | null;
+  onClose: () => void;
+  onTestAgain: () => void;
+  onDraw: () => void;
+  onPlayLand: () => void;
+  onCast: () => void;
+  onAttack: () => void;
+  onPass: () => void;
+}) {
+  const playerMana = Math.max(0, getManaSources(arena.playerBattlefield) - arena.playerManaSpent);
+  const botMana = getManaSources(arena.botBattlefield);
+  const isPlayerTurn = arena.activeTurn === "player" && !arena.winner;
+
+  return (
+    <div className="relative z-10 mx-auto flex h-full max-w-[1640px] flex-col gap-3 p-3 sm:p-4">
+      <div className="rounded-[8px] border border-gold/25 bg-obsidian/88 p-3 shadow-[0_18px_60px_rgba(0,0,0,.45)]">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex flex-wrap items-center gap-3">
+            <ArenaBadge label="Voce" value={`${arena.playerLife} vida`} tone="gold" />
+            <ArenaBadge label="Bot do Galo" value={`${arena.botLife} vida`} tone="purple" />
+            <ArenaBadge label="Turno" value={`${arena.turn} ${arena.activeTurn === "player" ? "Sua prioridade" : "Bot pensando"}`} tone="neutral" />
+            <ArenaBadge label="Mana" value={`${playerMana} disponivel`} tone="neutral" />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" onClick={onTestAgain}>
+              <Shuffle className="size-4" />
+              Nova Arena
+            </Button>
+            <Button type="button" variant="secondary" onClick={onClose}>
+              <X className="size-4" />
+              Sair
+            </Button>
+          </div>
+        </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+          <HandStat label="Mulligan" value={stats ? `${stats.mulligan}%` : "--"} />
+          <HandStat label="Abrir ramp" value={stats ? `${stats.ramp}%` : "--"} />
+          <HandStat label="Abrir draw" value={stats ? `${stats.draw}%` : "--"} />
+          <HandStat label="Abrir terrenos" value={stats ? `${stats.lands}%` : "--"} />
+          <div className="rounded-[7px] border border-gold/30 bg-gold/10 p-3">
+            <span className="text-xs font-bold uppercase text-gold">Leitura da IA</span>
+            <strong className="mt-1 block text-sm text-frost">{arena.winner ? (arena.winner === "player" ? "Voce venceu" : "Bot venceu") : getHandVerdict(stats)}</strong>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid min-h-0 flex-1 gap-3 xl:grid-cols-[1fr_310px]">
+        <div className="relative min-h-0 overflow-hidden rounded-[8px] border border-white/10 bg-[radial-gradient(circle_at_50%_45%,rgba(215,180,106,.14),transparent_30%),linear-gradient(145deg,rgba(14,17,22,.86),rgba(3,5,10,.94))] shadow-[inset_0_0_100px_rgba(0,0,0,.72)]">
+          <ArenaZone
+            title="Campo do Bot"
+            life={arena.botLife}
+            mana={botMana}
+            battlefield={arena.botBattlefield}
+            handCount={arena.botHand.length}
+            opponent
+          />
+          <div className="mx-4 border-y border-gold/10 py-2 text-center text-xs font-black uppercase tracking-[.28em] text-gold/80">
+            Arena Magic The Galo
+          </div>
+          <ArenaZone
+            title="Seu Campo"
+            life={arena.playerLife}
+            mana={playerMana}
+            battlefield={arena.playerBattlefield}
+            handCount={arena.playerHand.length}
+          />
+
+          <div className="absolute bottom-3 left-1/2 h-[250px] min-w-[880px] -translate-x-1/2 sm:h-[300px]">
+            <div className="relative h-full">
+              {arena.playerHand.map((card, index) => (
+                <OpeningHandCardView key={`${card.name}-arena-${index}`} card={card} index={index} total={arena.playerHand.length} compact />
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <aside className="grid min-h-0 gap-3 rounded-[8px] border border-white/10 bg-obsidian/80 p-3">
+          <div>
+            <h3 className="text-lg font-black text-frost">Acoes</h3>
+            <p className="mt-1 text-xs leading-5 text-mist">
+              Regras simplificadas para testar ritmo: terrenos e ramp geram mana, cartas viram permanentes, remocoes removem ameacas.
+            </p>
+          </div>
+          <div className="grid gap-2">
+            <Button type="button" disabled={!isPlayerTurn || arena.playerDrewThisTurn} onClick={onDraw}>Comprar carta</Button>
+            <Button type="button" variant="secondary" disabled={!isPlayerTurn || arena.playerLandPlayedThisTurn} onClick={onPlayLand}>Baixar terreno</Button>
+            <Button type="button" variant="secondary" disabled={!isPlayerTurn} onClick={onCast}>Conjurar carta</Button>
+            <Button type="button" variant="secondary" disabled={!isPlayerTurn} onClick={onAttack}>Atacar</Button>
+            <Button type="button" disabled={!isPlayerTurn} onClick={onPass}>Passar turno</Button>
+          </div>
+          <div className="min-h-0 overflow-hidden rounded-[7px] border border-white/10 bg-black/25 p-3">
+            <h4 className="text-sm font-black text-gold">Log da partida</h4>
+            <div className="mt-2 max-h-72 space-y-2 overflow-y-auto pr-1 text-xs leading-5 text-mist">
+              {arena.log.slice(0, 18).map((item, index) => (
+                <p key={`${item}-${index}`} className={index === 0 ? "text-frost" : undefined}>{item}</p>
+              ))}
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function ArenaBadge({ label, value, tone }: { label: string; value: string; tone: "gold" | "purple" | "neutral" }) {
+  return (
+    <div
+      className={cn(
+        "rounded-[7px] border px-3 py-2",
+        tone === "gold" && "border-gold/30 bg-gold/10",
+        tone === "purple" && "border-purple-300/25 bg-purple-400/10",
+        tone === "neutral" && "border-white/10 bg-black/25"
+      )}
+    >
+      <span className="text-[10px] font-black uppercase tracking-[.18em] text-mist">{label}</span>
+      <strong className="mt-1 block text-sm text-frost">{value}</strong>
+    </div>
+  );
+}
+
+function ArenaZone({
+  title,
+  life,
+  mana,
+  battlefield,
+  handCount,
+  opponent = false
+}: {
+  title: string;
+  life: number;
+  mana: number;
+  battlefield: ArenaPermanent[];
+  handCount: number;
+  opponent?: boolean;
+}) {
+  return (
+    <section className={cn("relative grid min-h-[185px] gap-2 p-4", opponent ? "content-start" : "content-end pb-[270px] sm:pb-[320px]")}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-black uppercase tracking-[.22em] text-gold">{title}</h3>
+          <p className="mt-1 text-xs text-mist">{life} vida - {mana} mana - {handCount} cartas na mao</p>
+        </div>
+        {opponent ? (
+          <div className="flex -space-x-8">
+            {Array.from({ length: Math.min(handCount, 7) }).map((_, index) => (
+              <CardBack key={index} index={index} />
+            ))}
+          </div>
+        ) : null}
+      </div>
+      <div className="grid min-h-[112px] grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-7">
+        {battlefield.length ? (
+          battlefield.slice(0, 14).map((card) => <ArenaPermanentCard key={card.id} card={card} />)
+        ) : (
+          <div className="col-span-full grid min-h-[90px] place-items-center rounded-[7px] border border-dashed border-white/10 bg-black/20 text-xs font-bold text-mist">
+            Campo vazio
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function CardBack({ index }: { index: number }) {
+  return (
+    <div
+      className="h-20 w-14 rounded-[6px] border-2 border-black bg-[radial-gradient(circle_at_50%_35%,rgba(215,180,106,.55),transparent_28%),linear-gradient(145deg,#171923,#05060a)] shadow-[0_8px_20px_rgba(0,0,0,.45)]"
+      style={{ transform: `rotate(${(index - 3) * 4}deg)` }}
+    >
+      <div className="grid h-full place-items-center rounded-[4px] border border-gold/30 text-[9px] font-black uppercase tracking-[.16em] text-gold">
+        MTG
+      </div>
+    </div>
+  );
+}
+
+function ArenaPermanentCard({ card }: { card: ArenaPermanent }) {
+  const [cardImage, setCardImage] = useState<string | null | undefined>(() => cardImageCache.get(card.name));
+  const theme = getOpeningHandTheme(card.section);
+
+  useEffect(() => {
+    let cancelled = false;
+    const cached = cardImageCache.get(card.name);
+    if (cached !== undefined) {
+      setCardImage(cached);
+      return;
+    }
+
+    fetchScryfallCardImage(card.name)
+      .then((imageUrl) => {
+        cardImageCache.set(card.name, imageUrl);
+        if (!cancelled) setCardImage(imageUrl);
+      })
+      .catch(() => {
+        cardImageCache.set(card.name, null);
+        if (!cancelled) setCardImage(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [card.name]);
+
+  return (
+    <div className="group relative min-h-[112px] rounded-[7px] border border-white/10 bg-black/25 p-1">
+      {cardImage ? (
+        <img src={cardImage} alt={card.name} className="mx-auto h-24 rounded-[5px] object-contain transition group-hover:scale-125 group-hover:shadow-[0_16px_30px_rgba(0,0,0,.75)]" />
+      ) : (
+        <div className="grid h-24 place-items-center rounded-[5px] px-2 text-center text-[10px] font-black text-frost" style={{ background: theme.art }}>
+          {card.name}
+        </div>
+      )}
+      <div className="mt-1 truncate text-[10px] font-bold text-mist">{card.name}</div>
+      {card.section !== "Terrenos" ? (
+        <span className="absolute right-1 top-1 rounded-full bg-black/70 px-1.5 py-0.5 text-[10px] font-black text-gold">
+          {card.power}/{card.toughness}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function OpeningHandCardView({ card, index, total, compact = false }: { card: OpeningHandCard; index: number; total: number; compact?: boolean }) {
   const [isHovered, setIsHovered] = useState(false);
   const [cardImage, setCardImage] = useState<string | null | undefined>(() => cardImageCache.get(card.name));
   const theme = getOpeningHandTheme(card.section);
   const center = (total - 1) / 2;
-  const angle = isHovered ? 0 : (index - center) * 7;
-  const offset = (index - center) * 112;
-  const lift = isHovered ? -64 : Math.abs(index - center) * 12;
-  const scale = isHovered ? 1.34 : 1;
+  const angle = isHovered ? 0 : (index - center) * (compact ? 6 : 7);
+  const offset = (index - center) * (compact ? 82 : 112);
+  const lift = isHovered ? (compact ? -32 : -64) : Math.abs(index - center) * (compact ? 7 : 12);
+  const scale = isHovered ? (compact ? 1.22 : 1.34) : 1;
 
   useEffect(() => {
     let cancelled = false;
@@ -1658,7 +2224,10 @@ function OpeningHandCardView({ card, index, total }: { card: OpeningHandCard; in
       onFocus={() => setIsHovered(true)}
       onBlur={() => setIsHovered(false)}
       tabIndex={0}
-      className="absolute bottom-[8%] left-1/2 h-[360px] w-[258px] rounded-[16px] text-[#17130d] outline-none shadow-[0_28px_42px_rgba(0,0,0,.58)] transition-[filter,box-shadow] duration-200 hover:shadow-[0_34px_70px_rgba(0,0,0,.82)] focus:shadow-[0_34px_70px_rgba(0,0,0,.82)] sm:h-[430px] sm:w-[308px]"
+      className={cn(
+        "absolute left-1/2 rounded-[16px] text-[#17130d] outline-none shadow-[0_28px_42px_rgba(0,0,0,.58)] transition-[filter,box-shadow] duration-200 hover:shadow-[0_34px_70px_rgba(0,0,0,.82)] focus:shadow-[0_34px_70px_rgba(0,0,0,.82)]",
+        compact ? "bottom-0 h-[232px] w-[166px] sm:h-[270px] sm:w-[194px]" : "bottom-[8%] h-[360px] w-[258px] sm:h-[430px] sm:w-[308px]"
+      )}
       style={{
         zIndex: isHovered ? 80 : index + 1,
         transform: `translateX(calc(-50% + ${offset}px)) translateY(${lift}px) rotate(${angle}deg) scale(${scale})`,
