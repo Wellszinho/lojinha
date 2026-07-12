@@ -2207,6 +2207,13 @@ function ArenaStyles() {
           45% { box-shadow: 0 0 24px rgba(215,180,106,.55); }
           100% { box-shadow: 0 0 0 rgba(215,180,106,0); }
         }
+
+        @keyframes arenaCardReveal {
+          0% { opacity: 0; transform: translateX(42px) translateY(18px) rotate(8deg) scale(.72); filter: blur(8px); }
+          18% { opacity: 1; transform: translateX(0) translateY(0) rotate(0deg) scale(1.04); filter: blur(0); }
+          72% { opacity: 1; transform: translateX(0) translateY(0) rotate(0deg) scale(1); filter: blur(0); }
+          100% { opacity: 0; transform: translateX(26px) translateY(-10px) rotate(-3deg) scale(.96); filter: blur(3px); }
+        }
       `}
     </style>
   );
@@ -2330,6 +2337,7 @@ function ArenaDuel({
           <ArenaHeroMarker side="player" name="Voce" life={arena.playerLife} libraryCount={arena.playerLibrary.length} event={arena.event} />
           <ArenaCombatAnimation event={arena.event} />
           <ArenaEventSpotlight event={arena.event} />
+          <ArenaCardReveal event={arena.event} />
           {draggingCard ? (
             <div className="pointer-events-none absolute left-1/2 top-1/2 z-30 -translate-x-1/2 -translate-y-1/2 rounded-full border border-gold/40 bg-black/70 px-5 py-3 text-sm font-black text-gold shadow-[0_0_34px_rgba(215,180,106,.32)]">
               Solte para {draggingCard.section === "Terrenos" ? "baixar" : "conjurar"} {draggingCard.name}
@@ -2358,7 +2366,7 @@ function ArenaDuel({
             handCount={arena.playerHand.length}
           />
 
-          <div className="absolute bottom-3 left-1/2 h-[250px] min-w-[880px] -translate-x-1/2 sm:h-[300px]">
+          <div className="absolute bottom-3 left-1/2 z-[70] h-[250px] min-w-[880px] -translate-x-1/2 pointer-events-auto sm:h-[300px]">
             <div className="relative h-full">
               {arena.playerHand.map((card, index) => (
                 <OpeningHandCardView
@@ -2373,6 +2381,10 @@ function ArenaDuel({
                   onDragEnd={() => {
                     setDraggingCardIndex(null);
                     setIsDropReady(false);
+                  }}
+                  onPlay={() => {
+                    if (!isPlayerTurn) return;
+                    onPlayCard(index);
                   }}
                 />
               ))}
@@ -2563,6 +2575,67 @@ function ArenaEventSpotlight({ event }: { event?: ArenaEvent }) {
   );
 }
 
+function ArenaCardReveal({ event }: { event?: ArenaEvent }) {
+  const shouldReveal = Boolean(event?.cardName) && (event?.kind === "cast" || event?.kind === "mana" || event?.kind === "damage");
+  if (!event || !event.cardName || !shouldReveal) return null;
+
+  return (
+    <div key={event.id} className="pointer-events-none absolute right-5 top-1/2 z-[65] hidden w-[220px] -translate-y-1/2 xl:block" style={{ animation: "arenaCardReveal 2.6s ease-out both" }}>
+      <div className="rounded-[12px] border border-gold/45 bg-black/75 p-2 shadow-[0_24px_80px_rgba(0,0,0,.72),0_0_38px_rgba(215,180,106,.22)]">
+        <OpeningHandCardPreview name={event.cardName} section={event.kind === "mana" ? "Terrenos" : "Utilidades"} />
+      </div>
+      <div className="mt-2 rounded-full border border-gold/35 bg-black/70 px-3 py-1 text-center text-[10px] font-black uppercase tracking-[.2em] text-gold">
+        {event.actor === "player" ? "Sua jogada" : "Jogada do bot"}
+      </div>
+    </div>
+  );
+}
+
+function OpeningHandCardPreview({ name, section }: { name: string; section: string }) {
+  const [cardImage, setCardImage] = useState<string | null | undefined>(() => cardImageCache.get(name));
+  const theme = getOpeningHandTheme(section);
+
+  useEffect(() => {
+    let cancelled = false;
+    const cached = cardImageCache.get(name);
+    if (cached !== undefined) {
+      setCardImage(cached);
+      return;
+    }
+
+    setCardImage(undefined);
+    fetchScryfallCardImage(name)
+      .then((imageUrl) => {
+        cardImageCache.set(name, imageUrl);
+        if (!cancelled) setCardImage(imageUrl);
+      })
+      .catch(() => {
+        cardImageCache.set(name, null);
+        if (!cancelled) setCardImage(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [name]);
+
+  if (cardImage) {
+    return <img src={cardImage} alt={name} className="h-[306px] w-full rounded-[9px] object-contain" referrerPolicy="no-referrer" />;
+  }
+
+  return (
+    <div className="flex h-[306px] flex-col rounded-[9px] border-[6px] border-black p-2 text-[#17130d]" style={{ background: theme.frame }}>
+      <div className="flex h-full flex-col rounded-[8px] border border-black/70 bg-[#efe6cf] p-2">
+        <div className="rounded-[5px] border border-black/30 bg-[#d9ccb0] px-2 py-1 text-sm font-black">{name}</div>
+        <div className="mt-2 grid flex-1 place-items-center rounded-[6px] border-2 border-black/70 px-3 text-center text-white" style={{ background: theme.art }}>
+          <strong className="drop-shadow-[0_2px_4px_rgba(0,0,0,.8)]">{cardImage === undefined ? "Buscando carta real" : name}</strong>
+        </div>
+        <div className="mt-2 rounded-[5px] border border-black/35 bg-[#d9ccb0] px-2 py-1 text-[11px] font-black">{section}</div>
+      </div>
+    </div>
+  );
+}
+
 function getArenaEventLabel(event: ArenaEvent) {
   if (event.kind === "attack") return "Ataque";
   if (event.kind === "damage") return "Dano";
@@ -2597,7 +2670,7 @@ function ArenaZone({
   const creatureCards = battlefield.filter((card) => !card.isManaSource);
 
   return (
-    <section className={cn("relative z-10 grid gap-3 p-4", opponent ? "min-h-[270px] content-start pt-24" : "min-h-[360px] content-end pb-[270px] sm:pb-[320px]")}>
+    <section className={cn("pointer-events-none relative z-10 grid gap-3 p-4", opponent ? "min-h-[270px] content-start pt-24" : "min-h-[360px] content-end pb-[270px] sm:pb-[320px]")}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-black uppercase tracking-[.22em] text-gold">{title}</h3>
@@ -2785,7 +2858,8 @@ function OpeningHandCardView({
   draggable = false,
   isDragging = false,
   onDragStart,
-  onDragEnd
+  onDragEnd,
+  onPlay
 }: {
   card: OpeningHandCard;
   index: number;
@@ -2795,6 +2869,7 @@ function OpeningHandCardView({
   isDragging?: boolean;
   onDragStart?: () => void;
   onDragEnd?: () => void;
+  onPlay?: () => void;
 }) {
   const [isHovered, setIsHovered] = useState(false);
   const [cardImage, setCardImage] = useState<string | null | undefined>(() => cardImageCache.get(card.name));
@@ -2837,6 +2912,17 @@ function OpeningHandCardView({
       onMouseLeave={() => setIsHovered(false)}
       onFocus={() => setIsHovered(true)}
       onBlur={() => setIsHovered(false)}
+      onClick={() => {
+        if (!draggable || isDragging) return;
+        onPlay?.();
+      }}
+      onKeyDown={(event) => {
+        if (!draggable || isDragging) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onPlay?.();
+        }
+      }}
       draggable={draggable}
       onDragStart={(event) => {
         if (!draggable) return;
@@ -2849,7 +2935,7 @@ function OpeningHandCardView({
       className={cn(
         "absolute left-1/2 rounded-[16px] text-[#17130d] outline-none shadow-[0_28px_42px_rgba(0,0,0,.58)] transition-[transform,filter,box-shadow,opacity] duration-700 ease-out will-change-transform hover:shadow-[0_34px_70px_rgba(0,0,0,.82)] focus:shadow-[0_34px_70px_rgba(0,0,0,.82)]",
         compact ? "bottom-0 h-[232px] w-[166px] sm:h-[270px] sm:w-[194px]" : "bottom-[8%] h-[360px] w-[258px] sm:h-[430px] sm:w-[308px]",
-        draggable && "cursor-grab active:cursor-grabbing",
+        draggable && "cursor-pointer active:cursor-grabbing",
         isDragging && "opacity-45"
       )}
       style={{
