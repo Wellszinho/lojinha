@@ -80,6 +80,19 @@ type ArenaPermanent = OpeningHandCard & {
   power: number;
   toughness: number;
   isManaSource: boolean;
+  tapped: boolean;
+};
+
+type ArenaEventKind = "system" | "turn" | "draw" | "mana" | "cast" | "attack" | "damage" | "error";
+
+type ArenaEvent = {
+  id: number;
+  kind: ArenaEventKind;
+  actor: "player" | "bot" | "system";
+  message: string;
+  amount?: number;
+  cardName?: string;
+  target?: "player" | "bot";
 };
 
 type ArenaState = {
@@ -96,6 +109,7 @@ type ArenaState = {
   playerDrewThisTurn: boolean;
   playerLandPlayedThisTurn: boolean;
   playerManaSpent: number;
+  event?: ArenaEvent;
   log: string[];
   winner?: "player" | "bot";
 };
@@ -742,7 +756,8 @@ function makeArenaPermanent(card: OpeningHandCard, owner: "player" | "bot", inde
     id: `${owner}-${card.name}-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
     power,
     toughness: Math.max(1, power + 1),
-    isManaSource: card.section === "Terrenos" || card.section === "Ramp"
+    isManaSource: card.section === "Terrenos" || card.section === "Ramp",
+    tapped: false
   };
 }
 
@@ -750,9 +765,79 @@ function getManaSources(battlefield: ArenaPermanent[]) {
   return battlefield.filter((card) => card.isManaSource).length;
 }
 
+function getAvailableManaSources(battlefield: ArenaPermanent[]) {
+  return battlefield.filter((card) => card.isManaSource && !card.tapped).length;
+}
+
+function createArenaEvent(kind: ArenaEventKind, actor: ArenaEvent["actor"], message: string, details: Partial<ArenaEvent> = {}): ArenaEvent {
+  return {
+    id: Date.now() + Math.floor(Math.random() * 1000),
+    kind,
+    actor,
+    message,
+    ...details
+  };
+}
+
+function addArenaLog(
+  state: ArenaState,
+  kind: ArenaEventKind,
+  actor: ArenaEvent["actor"],
+  message: string,
+  details: Partial<ArenaEvent> = {}
+): ArenaState {
+  const event = createArenaEvent(kind, actor, message, details);
+  return {
+    ...state,
+    event,
+    log: [message, ...state.log]
+  };
+}
+
+function untapArenaPermanents(state: ArenaState, owner: "player" | "bot"): ArenaState {
+  if (owner === "player") {
+    return {
+      ...state,
+      playerBattlefield: state.playerBattlefield.map((card) => ({ ...card, tapped: false }))
+    };
+  }
+
+  return {
+    ...state,
+    botBattlefield: state.botBattlefield.map((card) => ({ ...card, tapped: false }))
+  };
+}
+
+function tapManaForCost(state: ArenaState, owner: "player" | "bot", cost: number): { paid: boolean; state: ArenaState } {
+  if (cost <= 0) return { paid: true, state };
+
+  const battlefield = owner === "player" ? state.playerBattlefield : state.botBattlefield;
+  const available = getAvailableManaSources(battlefield);
+  if (available < cost) return { paid: false, state };
+
+  let remaining = cost;
+  const tappedBattlefield = battlefield.map((card) => {
+    if (remaining > 0 && card.isManaSource && !card.tapped) {
+      remaining -= 1;
+      return { ...card, tapped: true };
+    }
+
+    return card;
+  });
+
+  return {
+    paid: true,
+    state:
+      owner === "player"
+        ? { ...state, playerBattlefield: tappedBattlefield }
+        : { ...state, botBattlefield: tappedBattlefield }
+  };
+}
+
 function createArenaState(deckList: DeckListEntry[]): ArenaState {
   const playerLibrary = shuffleCards(expandDeckEntries(deckList));
   const botLibrary = shuffleCards(expandDeckEntries(deckList));
+  const firstEvent = createArenaEvent("system", "system", "A arena abriu. Voce esta no play.");
 
   return {
     playerLife: 40,
@@ -768,8 +853,9 @@ function createArenaState(deckList: DeckListEntry[]): ArenaState {
     playerDrewThisTurn: false,
     playerLandPlayedThisTurn: false,
     playerManaSpent: 0,
+    event: firstEvent,
     log: [
-      "A arena abriu. Voce esta no play.",
+      firstEvent.message,
       "Bot do Galo comprou sete cartas e aguarda sua primeira jogada."
     ]
   };
@@ -783,11 +869,15 @@ function drawArenaCard(state: ArenaState, owner: "player" | "bot"): { state: Are
 
   if (!drawn) {
     return {
-      state: {
-        ...state,
-        winner: (owner === "player" ? "bot" : "player") as "player" | "bot",
-        log: [`${owner === "player" ? "Voce" : "Bot do Galo"} tentou comprar de um grimorio vazio.`, ...state.log]
-      },
+      state: addArenaLog(
+        {
+          ...state,
+          winner: (owner === "player" ? "bot" : "player") as "player" | "bot",
+        },
+        "error",
+        owner,
+        `${owner === "player" ? "Voce" : "Bot do Galo"} tentou comprar de um grimorio vazio.`
+      ),
       drawn: undefined
     };
   }
@@ -813,55 +903,85 @@ function castArenaCard(state: ArenaState, owner: "player" | "bot", cardIndex: nu
   const card = hand[cardIndex];
   if (!card) return state;
 
+  const cost = getArenaCardCost(card);
+  const payment = tapManaForCost(state, owner, cost);
+  if (!payment.paid) return addArenaLog(state, "error", owner, `${label} tentou conjurar ${card.name}, mas nao tinha mana suficiente.`, { cardName: card.name });
+
+  const paidState = payment.state;
   const remainingHand = hand.filter((_, index) => index !== cardIndex);
-  const permanent = makeArenaPermanent(card, owner, state[battlefieldKey].length);
+  const permanent = makeArenaPermanent(card, owner, paidState[battlefieldKey].length);
 
   if (card.section === "Remocoes") {
-    const targetIndex = state[opponentBattlefieldKey].findIndex((item) => item.section !== "Terrenos");
+    const targetIndex = paidState[opponentBattlefieldKey].findIndex((item) => item.section !== "Terrenos");
     if (targetIndex >= 0) {
-      const target = state[opponentBattlefieldKey][targetIndex];
-      return {
-        ...state,
-        [handKey]: remainingHand,
-        [opponentBattlefieldKey]: state[opponentBattlefieldKey].filter((_, index) => index !== targetIndex),
-        log: [`${label} conjurou ${card.name} e removeu ${target.name}.`, ...state.log]
-      };
+      const target = paidState[opponentBattlefieldKey][targetIndex];
+      return addArenaLog(
+        {
+          ...paidState,
+          [handKey]: remainingHand,
+          [opponentBattlefieldKey]: paidState[opponentBattlefieldKey].filter((_, index) => index !== targetIndex)
+        },
+        "cast",
+        owner,
+        `${label} virou ${cost} mana, conjurou ${card.name} e removeu ${target.name}.`,
+        { cardName: card.name }
+      );
     }
 
-    return {
-      ...state,
-      [handKey]: remainingHand,
-      [opponentLifeKey]: Math.max(0, state[opponentLifeKey] - 2),
-      log: [`${label} conjurou ${card.name} e causou 2 de dano direto.`, ...state.log]
-    };
+    return addArenaLog(
+      {
+        ...paidState,
+        [handKey]: remainingHand,
+        [opponentLifeKey]: Math.max(0, paidState[opponentLifeKey] - 2)
+      },
+      "damage",
+      owner,
+      `${label} virou ${cost} mana, conjurou ${card.name} e causou 2 de dano direto.`,
+      { amount: 2, cardName: card.name, target: isPlayer ? "bot" : "player" }
+    );
   }
 
   if (card.section === "Board Wipes") {
-    return {
-      ...state,
-      [handKey]: remainingHand,
-      playerBattlefield: state.playerBattlefield.filter((item) => item.section === "Terrenos"),
-      botBattlefield: state.botBattlefield.filter((item) => item.section === "Terrenos"),
-      log: [`${label} limpou a mesa com ${card.name}.`, ...state.log]
-    };
+    return addArenaLog(
+      {
+        ...paidState,
+        [handKey]: remainingHand,
+        playerBattlefield: paidState.playerBattlefield.filter((item) => item.section === "Terrenos"),
+        botBattlefield: paidState.botBattlefield.filter((item) => item.section === "Terrenos")
+      },
+      "cast",
+      owner,
+      `${label} virou ${cost} mana e limpou a mesa com ${card.name}.`,
+      { cardName: card.name }
+    );
   }
 
   if (card.section === "Draw") {
-    const firstDraw = drawArenaCard({ ...state, [handKey]: remainingHand }, owner);
+    const firstDraw = drawArenaCard({ ...paidState, [handKey]: remainingHand }, owner);
     const secondDraw = drawArenaCard(firstDraw.state, owner);
-    return {
-      ...secondDraw.state,
-      [battlefieldKey]: [...secondDraw.state[battlefieldKey], permanent],
-      log: [`${label} conjurou ${card.name} e comprou cartas.`, ...secondDraw.state.log]
-    };
+    return addArenaLog(
+      {
+        ...secondDraw.state,
+        [battlefieldKey]: [...secondDraw.state[battlefieldKey], permanent]
+      },
+      "cast",
+      owner,
+      `${label} virou ${cost} mana, conjurou ${card.name} e comprou cartas.`,
+      { cardName: card.name }
+    );
   }
 
-  return {
-    ...state,
-    [handKey]: remainingHand,
-    [battlefieldKey]: [...state[battlefieldKey], permanent],
-    log: [`${label} colocou ${card.name} na mesa.`, ...state.log]
-  };
+  return addArenaLog(
+    {
+      ...paidState,
+      [handKey]: remainingHand,
+      [battlefieldKey]: [...paidState[battlefieldKey], permanent]
+    },
+    "cast",
+    owner,
+    `${label} virou ${cost} mana e colocou ${card.name} na mesa.`,
+    { cardName: card.name }
+  );
 }
 
 function attackWithBoard(state: ArenaState, owner: "player" | "bot"): ArenaState {
@@ -871,20 +991,22 @@ function attackWithBoard(state: ArenaState, owner: "player" | "bot"): ArenaState
   const damage = attackers.reduce((sum, card) => sum + Math.max(1, card.power), 0);
 
   if (!damage) {
-    return {
-      ...state,
-      log: [`${isPlayer ? "Voce" : "Bot do Galo"} ainda nao tem atacantes na mesa.`, ...state.log]
-    };
+    return addArenaLog(state, "error", owner, `${isPlayer ? "Voce" : "Bot do Galo"} ainda nao tem atacantes na mesa.`);
   }
 
   const lifeKey = isPlayer ? "botLife" : "playerLife";
   const nextLife = Math.max(0, state[lifeKey] - damage);
-  return {
-    ...state,
-    [lifeKey]: nextLife,
-    winner: nextLife <= 0 ? owner : state.winner,
-    log: [`${isPlayer ? "Voce atacou" : "Bot do Galo atacou"} causando ${damage} de dano.`, ...state.log]
-  };
+  return addArenaLog(
+    {
+      ...state,
+      [lifeKey]: nextLife,
+      winner: nextLife <= 0 ? owner : state.winner
+    },
+    "attack",
+    owner,
+    `${isPlayer ? "Voce atacou" : "Bot do Galo atacou"} com ${attackers.length} atacante(s), causando ${damage} de dano.`,
+    { amount: damage, target: isPlayer ? "bot" : "player" }
+  );
 }
 
 function playFirstLand(state: ArenaState, owner: "player" | "bot"): ArenaState {
@@ -903,44 +1025,51 @@ function playLandAt(state: ArenaState, owner: "player" | "bot", cardIndex: numbe
   const land = state[handKey][cardIndex];
   if (!land || land.section !== "Terrenos") return state;
 
-  return {
-    ...state,
-    [handKey]: state[handKey].filter((_, index) => index !== cardIndex),
-    [battlefieldKey]: [...state[battlefieldKey], makeArenaPermanent(land, owner, state[battlefieldKey].length)],
-    log: [`${isPlayer ? "Voce baixou" : "Bot do Galo baixou"} ${land.name}.`, ...state.log]
-  };
+  return addArenaLog(
+    {
+      ...state,
+      [handKey]: state[handKey].filter((_, index) => index !== cardIndex),
+      [battlefieldKey]: [...state[battlefieldKey], makeArenaPermanent(land, owner, state[battlefieldKey].length)]
+    },
+    "mana",
+    owner,
+    `${isPlayer ? "Voce baixou" : "Bot do Galo baixou"} ${land.name}.`,
+    { cardName: land.name }
+  );
 }
 
 function runBotTurn(state: ArenaState): ArenaState {
   let nextState: ArenaState = {
-    ...state,
+    ...untapArenaPermanents(state, "bot"),
     activeTurn: "bot",
-    log: [`Turno do Bot do Galo.`, ...state.log]
   };
+  nextState = addArenaLog(nextState, "turn", "bot", "Turno do Bot do Galo. Permanentes do bot foram desviradas.");
 
   const drawResult = drawArenaCard(nextState, "bot");
-  nextState = {
-    ...drawResult.state,
-    log: [drawResult.drawn ? `Bot do Galo comprou uma carta.` : "Bot do Galo nao conseguiu comprar.", ...drawResult.state.log]
-  };
+  nextState = addArenaLog(drawResult.state, "draw", "bot", drawResult.drawn ? "Bot do Galo comprou uma carta." : "Bot do Galo nao conseguiu comprar.");
 
   nextState = playFirstLand(nextState, "bot");
 
-  const botMana = getManaSources(nextState.botBattlefield);
+  const botMana = getAvailableManaSources(nextState.botBattlefield);
   const castIndex = nextState.botHand.findIndex((card) => card.section !== "Terrenos" && getArenaCardCost(card) <= botMana);
   if (castIndex >= 0) nextState = castArenaCard(nextState, "bot", castIndex);
 
   if (nextState.turn > 1) nextState = attackWithBoard(nextState, "bot");
 
-  return {
-    ...nextState,
-    turn: nextState.turn + 1,
-    activeTurn: "player",
-    playerDrewThisTurn: false,
-    playerLandPlayedThisTurn: false,
-    playerManaSpent: 0,
-    log: [`Sua prioridade.`, ...nextState.log]
-  };
+  const playerReady = untapArenaPermanents(nextState, "player");
+  return addArenaLog(
+    {
+      ...playerReady,
+      turn: nextState.turn + 1,
+      activeTurn: "player",
+      playerDrewThisTurn: false,
+      playerLandPlayedThisTurn: false,
+      playerManaSpent: 0
+    },
+    "turn",
+    "player",
+    "Sua prioridade. Suas permanentes foram desviradas."
+  );
 }
 
 export function DeckBuilderClient() {
@@ -1615,22 +1744,27 @@ function ResultSection({
   function handleArenaDraw() {
     setArenaState((current) => {
       if (!current || current.activeTurn !== "player" || current.winner) return current;
-      if (current.playerDrewThisTurn) return { ...current, log: ["Voce ja comprou neste turno.", ...current.log] };
+      if (current.playerDrewThisTurn) return addArenaLog(current, "error", "player", "Voce ja comprou neste turno.");
 
       const result = drawArenaCard(current, "player");
-      return {
-        ...result.state,
-        playerDrewThisTurn: true,
-        log: [result.drawn ? `Voce comprou ${result.drawn.name}.` : "Voce nao conseguiu comprar.", ...result.state.log]
-      };
+      return addArenaLog(
+        {
+          ...result.state,
+          playerDrewThisTurn: true
+        },
+        "draw",
+        "player",
+        result.drawn ? `Voce comprou ${result.drawn.name}.` : "Voce nao conseguiu comprar.",
+        result.drawn ? { cardName: result.drawn.name } : {}
+      );
     });
   }
 
   function handleArenaLand() {
     setArenaState((current) => {
       if (!current || current.activeTurn !== "player" || current.winner) return current;
-      if (current.playerLandPlayedThisTurn) return { ...current, log: ["Voce ja baixou terreno neste turno.", ...current.log] };
-      if (!current.playerHand.some((card) => card.section === "Terrenos")) return { ...current, log: ["Nao ha terreno na sua mao.", ...current.log] };
+      if (current.playerLandPlayedThisTurn) return addArenaLog(current, "error", "player", "Voce ja baixou terreno neste turno.");
+      if (!current.playerHand.some((card) => card.section === "Terrenos")) return addArenaLog(current, "error", "player", "Nao ha terreno na sua mao.");
 
       const nextState = playFirstLand(current, "player");
       return { ...nextState, playerLandPlayedThisTurn: true };
@@ -1640,13 +1774,11 @@ function ResultSection({
   function handleArenaCast() {
     setArenaState((current) => {
       if (!current || current.activeTurn !== "player" || current.winner) return current;
-      const availableMana = getManaSources(current.playerBattlefield) - current.playerManaSpent;
+      const availableMana = getAvailableManaSources(current.playerBattlefield);
       const cardIndex = current.playerHand.findIndex((card) => card.section !== "Terrenos" && getArenaCardCost(card) <= availableMana);
-      if (cardIndex < 0) return { ...current, log: [`Mana disponivel: ${Math.max(0, availableMana)}. Nenhuma magica pode ser conjurada agora.`, ...current.log] };
+      if (cardIndex < 0) return addArenaLog(current, "error", "player", `Mana disponivel: ${Math.max(0, availableMana)}. Nenhuma magica pode ser conjurada agora.`);
 
-      const card = current.playerHand[cardIndex];
-      const nextState = castArenaCard(current, "player", cardIndex);
-      return { ...nextState, playerManaSpent: current.playerManaSpent + getArenaCardCost(card) };
+      return castArenaCard(current, "player", cardIndex);
     });
   }
 
@@ -1658,22 +1790,26 @@ function ResultSection({
       if (!card) return current;
 
       if (card.section === "Terrenos") {
-        if (current.playerLandPlayedThisTurn) return { ...current, log: ["Voce ja baixou terreno neste turno.", ...current.log] };
+        if (current.playerLandPlayedThisTurn) {
+          return addArenaLog(current, "error", "player", "Voce ja baixou terreno neste turno.", { cardName: card.name });
+        }
         const nextState = playLandAt(current, "player", cardIndex);
         return { ...nextState, playerLandPlayedThisTurn: true };
       }
 
-      const availableMana = getManaSources(current.playerBattlefield) - current.playerManaSpent;
+      const availableMana = getAvailableManaSources(current.playerBattlefield);
       const cost = getArenaCardCost(card);
       if (cost > availableMana) {
-        return {
-          ...current,
-          log: [`${card.name} custa ${cost}. Voce tem ${Math.max(0, availableMana)} mana disponivel.`, ...current.log]
-        };
+        return addArenaLog(
+          current,
+          "error",
+          "player",
+          `${card.name} custa ${cost}. Voce tem ${Math.max(0, availableMana)} mana disponivel.`,
+          { cardName: card.name }
+        );
       }
 
-      const nextState = castArenaCard(current, "player", cardIndex);
-      return { ...nextState, playerManaSpent: current.playerManaSpent + cost };
+      return castArenaCard(current, "player", cardIndex);
     });
   }
 
@@ -1687,7 +1823,7 @@ function ResultSection({
   function handleArenaPass() {
     setArenaState((current) => {
       if (!current || current.activeTurn !== "player" || current.winner) return current;
-      return runBotTurn({ ...current, log: ["Voce passou o turno.", ...current.log] });
+      return runBotTurn(addArenaLog(current, "turn", "player", "Voce passou o turno."));
     });
   }
 
@@ -1994,6 +2130,50 @@ function ArenaStyles() {
           0% { opacity: 0; transform: translateY(18px) scale(.985); filter: blur(8px); }
           100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
         }
+
+        @keyframes arenaEventPulse {
+          0% { opacity: 0; transform: translate(-50%, -50%) scale(.82); filter: blur(8px); }
+          18% { opacity: 1; transform: translate(-50%, -50%) scale(1.04); filter: blur(0); }
+          76% { opacity: 1; transform: translate(-50%, -50%) scale(1); filter: blur(0); }
+          100% { opacity: 0; transform: translate(-50%, -50%) scale(1.08); filter: blur(4px); }
+        }
+
+        @keyframes arenaAttackPlayer {
+          0% { opacity: 0; transform: translate(-50%, 140%) scaleY(.3); }
+          24% { opacity: 1; }
+          100% { opacity: 0; transform: translate(-50%, -120%) scaleY(1); }
+        }
+
+        @keyframes arenaAttackBot {
+          0% { opacity: 0; transform: translate(-50%, -120%) scaleY(.3); }
+          24% { opacity: 1; }
+          100% { opacity: 0; transform: translate(-50%, 140%) scaleY(1); }
+        }
+
+        @keyframes arenaDamagePop {
+          0% { opacity: 0; transform: translate(-50%, 10px) scale(.7); }
+          18% { opacity: 1; transform: translate(-50%, 0) scale(1.1); }
+          100% { opacity: 0; transform: translate(-50%, -38px) scale(1); }
+        }
+
+        @keyframes arenaHeroHit {
+          0% { filter: brightness(1); transform: scale(1); }
+          24% { filter: brightness(1.75); transform: scale(1.06); }
+          52% { filter: brightness(.75); transform: scale(.96); }
+          100% { filter: brightness(1); transform: scale(1); }
+        }
+
+        @keyframes arenaActorGlow {
+          0% { box-shadow: 0 0 0 rgba(215,180,106,0); }
+          35% { box-shadow: 0 0 36px rgba(215,180,106,.52); }
+          100% { box-shadow: 0 0 0 rgba(215,180,106,0); }
+        }
+
+        @keyframes arenaTapGlow {
+          0% { box-shadow: 0 0 0 rgba(215,180,106,0); }
+          45% { box-shadow: 0 0 24px rgba(215,180,106,.55); }
+          100% { box-shadow: 0 0 0 rgba(215,180,106,0); }
+        }
       `}
     </style>
   );
@@ -2062,8 +2242,10 @@ function ArenaDuel({
 }) {
   const [draggingCardIndex, setDraggingCardIndex] = useState<number | null>(null);
   const [isDropReady, setIsDropReady] = useState(false);
-  const playerMana = Math.max(0, getManaSources(arena.playerBattlefield) - arena.playerManaSpent);
-  const botMana = getManaSources(arena.botBattlefield);
+  const playerMana = getAvailableManaSources(arena.playerBattlefield);
+  const botMana = getAvailableManaSources(arena.botBattlefield);
+  const playerTotalMana = getManaSources(arena.playerBattlefield);
+  const botTotalMana = getManaSources(arena.botBattlefield);
   const isPlayerTurn = arena.activeTurn === "player" && !arena.winner;
   const draggingCard = draggingCardIndex === null ? null : arena.playerHand[draggingCardIndex];
 
@@ -2083,7 +2265,7 @@ function ArenaDuel({
             <ArenaBadge label="Voce" value={`${arena.playerLife} vida`} tone="gold" />
             <ArenaBadge label="Bot do Galo" value={`${arena.botLife} vida`} tone="purple" />
             <ArenaBadge label="Turno" value={`${arena.turn} ${arena.activeTurn === "player" ? "Sua prioridade" : "Bot pensando"}`} tone="neutral" />
-            <ArenaBadge label="Mana" value={`${playerMana} disponivel`} tone="neutral" />
+            <ArenaBadge label="Mana" value={`${playerMana}/${playerTotalMana} disponivel`} tone="neutral" />
           </div>
           <div className="flex flex-wrap gap-2">
             <Button type="button" onClick={onTestAgain}>
@@ -2127,6 +2309,11 @@ function ArenaDuel({
             isDropReady ? "border-gold/70 ring-2 ring-gold/35" : "border-white/10"
           )}
         >
+          <ArenaBoardDecor />
+          <ArenaHeroMarker side="bot" name="Bot do Galo" life={arena.botLife} libraryCount={arena.botLibrary.length} event={arena.event} />
+          <ArenaHeroMarker side="player" name="Voce" life={arena.playerLife} libraryCount={arena.playerLibrary.length} event={arena.event} />
+          <ArenaCombatAnimation event={arena.event} />
+          <ArenaEventSpotlight event={arena.event} />
           {draggingCard ? (
             <div className="pointer-events-none absolute left-1/2 top-1/2 z-30 -translate-x-1/2 -translate-y-1/2 rounded-full border border-gold/40 bg-black/70 px-5 py-3 text-sm font-black text-gold shadow-[0_0_34px_rgba(215,180,106,.32)]">
               Solte para {draggingCard.section === "Terrenos" ? "baixar" : "conjurar"} {draggingCard.name}
@@ -2136,17 +2323,19 @@ function ArenaDuel({
             title="Campo do Bot"
             life={arena.botLife}
             mana={botMana}
+            totalMana={botTotalMana}
             battlefield={arena.botBattlefield}
             handCount={arena.botHand.length}
             opponent
           />
-          <div className="mx-4 border-y border-gold/10 py-2 text-center text-xs font-black uppercase tracking-[.28em] text-gold/80">
+          <div className="relative z-10 mx-4 border-y border-gold/10 py-2 text-center text-xs font-black uppercase tracking-[.28em] text-gold/80">
             Arena Magic The Galo
           </div>
           <ArenaZone
             title="Seu Campo"
             life={arena.playerLife}
             mana={playerMana}
+            totalMana={playerTotalMana}
             battlefield={arena.playerBattlefield}
             handCount={arena.playerHand.length}
           />
@@ -2187,11 +2376,26 @@ function ArenaDuel({
             <Button type="button" variant="secondary" disabled={!isPlayerTurn} onClick={onAttack}>Atacar</Button>
             <Button type="button" disabled={!isPlayerTurn} onClick={onPass}>Passar turno</Button>
           </div>
+          {arena.event ? (
+            <div className="rounded-[7px] border border-gold/35 bg-gold/10 p-3 shadow-[0_0_26px_rgba(215,180,106,.12)]">
+              <span className="text-[10px] font-black uppercase tracking-[.2em] text-gold">Ultimo evento</span>
+              <strong className="mt-2 block text-sm leading-5 text-frost">{arena.event.message}</strong>
+            </div>
+          ) : null}
           <div className="min-h-0 overflow-hidden rounded-[7px] border border-white/10 bg-black/25 p-3">
-            <h4 className="text-sm font-black text-gold">Log da partida</h4>
+            <h4 className="text-sm font-black text-gold">Historico claro</h4>
             <div className="mt-2 max-h-72 space-y-2 overflow-y-auto pr-1 text-xs leading-5 text-mist">
               {arena.log.slice(0, 18).map((item, index) => (
-                <p key={`${item}-${index}`} className={index === 0 ? "text-frost" : undefined}>{item}</p>
+                <p
+                  key={`${item}-${index}`}
+                  className={cn(
+                    "rounded-[6px] border px-2 py-1",
+                    index === 0 ? "border-gold/25 bg-gold/10 text-frost" : "border-white/5 bg-white/[.03]"
+                  )}
+                >
+                  <span className="mr-2 font-black text-gold">{index + 1}</span>
+                  {item}
+                </p>
               ))}
             </div>
           </div>
@@ -2217,10 +2421,150 @@ function ArenaBadge({ label, value, tone }: { label: string; value: string; tone
   );
 }
 
+function ArenaBoardDecor() {
+  return (
+    <div className="pointer-events-none absolute inset-0 overflow-hidden">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(255,255,255,.09),transparent_18%),radial-gradient(circle_at_12%_24%,rgba(56,138,179,.24),transparent_16%),radial-gradient(circle_at_88%_74%,rgba(232,122,38,.2),transparent_16%)]" />
+      <div className="absolute left-1/2 top-1/2 h-[82%] w-[72%] -translate-x-1/2 -translate-y-1/2 rounded-full border border-gold/18" />
+      <div className="absolute left-1/2 top-1/2 h-[58%] w-[52%] -translate-x-1/2 -translate-y-1/2 rounded-full border border-gold/16" />
+      <div className="absolute left-1/2 top-0 h-full w-px bg-gradient-to-b from-transparent via-gold/28 to-transparent" />
+      <div className="absolute left-0 top-1/2 h-px w-full bg-gradient-to-r from-transparent via-gold/24 to-transparent" />
+      <div className="absolute left-1/2 top-1/2 grid size-20 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-gold/25 bg-black/22 shadow-[0_0_35px_rgba(215,180,106,.16)]">
+        <div className="size-9 rotate-45 border border-gold/35" />
+      </div>
+      <div className="absolute left-4 top-4 h-28 w-16 rounded-[6px] border-l border-t border-cyan-300/18 bg-cyan-400/5" />
+      <div className="absolute bottom-4 right-4 h-32 w-20 rounded-[6px] border-b border-r border-orange-300/18 bg-orange-400/5" />
+    </div>
+  );
+}
+
+function ArenaHeroMarker({
+  side,
+  name,
+  life,
+  libraryCount,
+  event
+}: {
+  side: "player" | "bot";
+  name: string;
+  life: number;
+  libraryCount: number;
+  event?: ArenaEvent;
+}) {
+  const isPlayer = side === "player";
+  const isTarget = event?.target === side && Boolean(event.amount);
+  const isActor = event?.actor === side && event.kind !== "turn" && event.kind !== "draw";
+
+  return (
+    <div
+      className={cn(
+        "pointer-events-none absolute z-20 flex items-center gap-3",
+        isPlayer ? "bottom-[244px] left-1/2 -translate-x-1/2 sm:bottom-[286px]" : "left-1/2 top-4 -translate-x-1/2"
+      )}
+    >
+      {!isPlayer ? <ArenaDeckPile count={libraryCount} /> : null}
+      <div className="grid place-items-center">
+        <div
+          key={event?.id}
+          className={cn(
+            "grid size-20 place-items-center rounded-full border bg-black/70 shadow-[0_0_36px_rgba(0,0,0,.65)]",
+            isPlayer ? "border-gold/45" : "border-purple-300/35",
+            isTarget && "border-red-300/70",
+            isActor && "border-gold/70"
+          )}
+          style={
+            isTarget
+              ? { animation: "arenaHeroHit 680ms ease-out both" }
+              : isActor
+                ? { animation: "arenaActorGlow 900ms ease-out both" }
+                : undefined
+          }
+        >
+          {isPlayer ? <span className="text-xl font-black text-gold">MTG</span> : <Bot className="size-9 text-purple-200" />}
+        </div>
+        <div className="-mt-4 rounded-full border border-gold/35 bg-black/80 px-4 py-1 text-2xl font-black text-frost shadow-[0_0_24px_rgba(215,180,106,.18)]">
+          {life}
+        </div>
+        <span className="mt-1 text-xs font-black uppercase tracking-[.16em] text-mist">{name}</span>
+      </div>
+      {isPlayer ? <ArenaDeckPile count={libraryCount} /> : null}
+    </div>
+  );
+}
+
+function ArenaDeckPile({ count }: { count: number }) {
+  return (
+    <div className="relative h-24 w-16">
+      <div className="absolute inset-0 translate-x-2 -translate-y-2 rounded-[7px] border border-black bg-[#201614]" />
+      <div className="absolute inset-0 translate-x-1 -translate-y-1 rounded-[7px] border border-black bg-[#2a1a14]" />
+      <div className="absolute inset-0 grid place-items-center rounded-[7px] border-2 border-black bg-[radial-gradient(circle_at_50%_38%,rgba(215,180,106,.46),transparent_26%),linear-gradient(145deg,#1c1f2b,#07080d)] text-[10px] font-black uppercase tracking-[.14em] text-gold shadow-[0_16px_28px_rgba(0,0,0,.45)]">
+        {count}
+      </div>
+    </div>
+  );
+}
+
+function ArenaCombatAnimation({ event }: { event?: ArenaEvent }) {
+  if (!event || (event.kind !== "attack" && event.kind !== "damage")) return null;
+
+  const fromPlayer = event.actor === "player";
+  const targetPlayer = event.target === "player";
+
+  return (
+    <div key={event.id} className="pointer-events-none absolute inset-0 z-40">
+      <div
+        className={cn(
+          "absolute left-1/2 top-1/2 h-[58%] w-2 rounded-full bg-gradient-to-b from-transparent via-gold to-transparent blur-[1px]",
+          fromPlayer ? "origin-bottom" : "origin-top"
+        )}
+        style={{ animation: `${fromPlayer ? "arenaAttackPlayer" : "arenaAttackBot"} 920ms ease-out both` }}
+      />
+      {event.amount ? (
+        <div
+          className={cn("absolute left-1/2 rounded-full border border-red-300/60 bg-red-600/80 px-4 py-2 text-3xl font-black text-white shadow-[0_0_34px_rgba(255,60,40,.65)]", targetPlayer ? "bottom-[18%]" : "top-[18%]")}
+          style={{ animation: "arenaDamagePop 1100ms ease-out both" }}
+        >
+          -{event.amount}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ArenaEventSpotlight({ event }: { event?: ArenaEvent }) {
+  if (!event) return null;
+
+  return (
+    <div
+      key={event.id}
+      className={cn(
+        "pointer-events-none absolute left-1/2 top-1/2 z-50 max-w-[520px] rounded-[8px] border px-5 py-4 text-center shadow-[0_20px_70px_rgba(0,0,0,.6)]",
+        event.kind === "error" ? "border-red-300/40 bg-red-950/80" : "border-gold/35 bg-black/78"
+      )}
+      style={{ animation: "arenaEventPulse 2300ms ease-out both" }}
+    >
+      <span className="text-[10px] font-black uppercase tracking-[.24em] text-gold">{getArenaEventLabel(event)}</span>
+      <strong className="mt-2 block text-lg leading-6 text-frost">{event.message}</strong>
+    </div>
+  );
+}
+
+function getArenaEventLabel(event: ArenaEvent) {
+  if (event.kind === "attack") return "Ataque";
+  if (event.kind === "damage") return "Dano";
+  if (event.kind === "cast") return "Magica conjurada";
+  if (event.kind === "mana") return "Mana";
+  if (event.kind === "turn") return "Turno";
+  if (event.kind === "draw") return "Compra";
+  if (event.kind === "error") return "Aviso";
+  return "Arena";
+}
+
 function ArenaZone({
   title,
   life,
   mana,
+  totalMana,
   battlefield,
   handCount,
   opponent = false
@@ -2228,6 +2572,7 @@ function ArenaZone({
   title: string;
   life: number;
   mana: number;
+  totalMana: number;
   battlefield: ArenaPermanent[];
   handCount: number;
   opponent?: boolean;
@@ -2237,7 +2582,7 @@ function ArenaZone({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-black uppercase tracking-[.22em] text-gold">{title}</h3>
-          <p className="mt-1 text-xs text-mist">{life} vida - {mana} mana - {handCount} cartas na mao</p>
+          <p className="mt-1 text-xs text-mist">{life} vida - {mana}/{totalMana} mana - {handCount} cartas na mao</p>
         </div>
         {opponent ? (
           <div className="flex -space-x-8">
@@ -2301,15 +2646,30 @@ function ArenaPermanentCard({ card }: { card: ArenaPermanent }) {
   }, [card.name]);
 
   return (
-    <div className="group relative min-h-[112px] rounded-[7px] border border-white/10 bg-black/25 p-1">
-      {cardImage ? (
-        <img src={cardImage} alt={card.name} className="mx-auto h-24 rounded-[5px] object-contain transition group-hover:scale-125 group-hover:shadow-[0_16px_30px_rgba(0,0,0,.75)]" />
-      ) : (
-        <div className="grid h-24 place-items-center rounded-[5px] px-2 text-center text-[10px] font-black text-frost" style={{ background: theme.art }}>
-          {card.name}
-        </div>
+    <div
+      className={cn(
+        "group relative min-h-[126px] rounded-[7px] border p-1 transition",
+        card.tapped ? "border-gold/35 bg-gold/10 opacity-85" : "border-white/10 bg-black/25"
       )}
+    >
+      <div
+        className={cn("relative mx-auto grid h-24 place-items-center transition-transform duration-300", card.tapped && "rotate-90 scale-[.86]")}
+        style={card.tapped ? { animation: "arenaTapGlow 900ms ease-out both" } : undefined}
+      >
+        {cardImage ? (
+          <img src={cardImage} alt={card.name} className="h-24 rounded-[5px] object-contain transition group-hover:scale-125 group-hover:shadow-[0_16px_30px_rgba(0,0,0,.75)]" />
+        ) : (
+          <div className="grid h-24 w-full place-items-center rounded-[5px] px-2 text-center text-[10px] font-black text-frost" style={{ background: theme.art }}>
+            {card.name}
+          </div>
+        )}
+      </div>
       <div className="mt-1 truncate text-[10px] font-bold text-mist">{card.name}</div>
+      {card.tapped ? (
+        <span className="absolute left-1 top-1 rounded-full bg-gold px-1.5 py-0.5 text-[9px] font-black uppercase text-obsidian">
+          Virada
+        </span>
+      ) : null}
       {card.section !== "Terrenos" ? (
         <span className="absolute right-1 top-1 rounded-full bg-black/70 px-1.5 py-0.5 text-[10px] font-black text-gold">
           {card.power}/{card.toughness}
