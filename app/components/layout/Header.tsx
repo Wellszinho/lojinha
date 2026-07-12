@@ -44,7 +44,7 @@ export function Header() {
             <Link
               key={item.href}
               href={item.href}
-              className="rounded-premium px-2.5 py-2 text-sm font-semibold text-mist transition hover:bg-white/[.06] hover:text-frost"
+              className="whitespace-nowrap rounded-premium px-2.5 py-2 text-sm font-semibold text-mist transition hover:bg-white/[.06] hover:text-frost"
             >
               {item.label}
             </Link>
