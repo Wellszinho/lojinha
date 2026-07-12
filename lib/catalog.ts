@@ -555,6 +555,56 @@ export const products: Product[] = [
     }
   },
   {
+    id: "prod_trash_can_commander_deckbox",
+    name: "Trash Can Mtg Commander DeckBox",
+    slug: "trash-can-mtg-commander-deckbox",
+    description:
+      "Deck box em formato de lata de lixo para Commander, com tampa removivel, visual cinza industrial e espaco para deck de Magic. Uma peca divertida, diferente e perfeita para quem quer proteger o deck com personalidade na mesa.",
+    price: 15000,
+    category: "deck-boxes",
+    collection: "planos-e-lendas",
+    productType: "deck-box",
+    rating: 5,
+    reviewCount: 2,
+    stock: 2,
+    sku: "MTG-TRASH-CAN-001",
+    material: "Estrutura rigida personalizada com acabamento cinza industrial",
+    compatibility: ["Magic", "Commander"],
+    tags: ["deck box", "trash can", "lata de lixo", "commander", "magic", "geek", "divertida"],
+    images: [
+      {
+        src: "/images/products/trash-can-commander-deckbox/closed.png",
+        alt: "Trash Can Mtg Commander DeckBox fechada"
+      },
+      {
+        src: "/images/products/trash-can-commander-deckbox/cards.png",
+        alt: "Trash Can Mtg Commander DeckBox ao lado de cartas Magic"
+      },
+      {
+        src: "/images/products/trash-can-commander-deckbox/open.png",
+        alt: "Trash Can Mtg Commander DeckBox aberta com deck e marcadores"
+      }
+    ],
+    isFeatured: true,
+    isNew: true,
+    tone: "from-zinc-500/35 via-zinc-950 to-slate-300/15",
+    dimensions: { width: "Personalizado", height: "Personalizado", depth: "Personalizado", weight: "Sob consulta" },
+    specs: [
+      "Deck box em formato de lata de lixo",
+      "Tampa removivel com acabamento tematico",
+      "Espaco interno para deck Commander",
+      "Visual cinza industrial e divertido",
+      "Preco unico de R$ 150,00"
+    ],
+    accessory: {
+      material: "Estrutura rigida personalizada",
+      dimensions: "Personalizado",
+      capacity: "Deck Commander",
+      theme: "Trash Can Commander",
+      color: "Cinza industrial"
+    }
+  },
+  {
     id: "prod_minecraft_chest_counter_deckbox",
     name: "Mtg Deckbox Baú do Minecraft com Contador",
     slug: "mtg-deckbox-bau-minecraft-com-contador",
