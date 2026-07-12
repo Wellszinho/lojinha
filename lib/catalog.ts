@@ -555,6 +555,52 @@ export const products: Product[] = [
     }
   },
   {
+    id: "prod_commander_mana_symbol_deckbox",
+    name: "MTG Commander Mana Symbol Deckbox",
+    slug: "mtg-commander-mana-symbol-deckbox",
+    description:
+      "Deck box para Commander com janela frontal para exibir a carta principal e simbolo de mana em relevo. Uma opcao compacta, elegante e acessivel para proteger o deck e destacar o comandante na mesa.",
+    price: 6000,
+    category: "deck-boxes",
+    collection: "planos-e-lendas",
+    productType: "deck-box",
+    rating: 4.9,
+    reviewCount: 3,
+    stock: 4,
+    sku: "MTG-MANA-SYMBOL-001",
+    material: "Estrutura rigida personalizada com acabamento preto texturizado",
+    compatibility: ["Magic", "Commander"],
+    tags: ["deck box", "mana symbol", "simbolo de mana", "commander", "magic", "janela frontal"],
+    images: [
+      {
+        src: "/images/products/commander-mana-symbol-deckbox/cover.jpg",
+        alt: "MTG Commander Mana Symbol Deckbox com carta em destaque"
+      },
+      {
+        src: "/images/products/commander-mana-symbol-deckbox/real-photo.png",
+        alt: "Foto real da MTG Commander Mana Symbol Deckbox"
+      }
+    ],
+    isFeatured: true,
+    isNew: true,
+    tone: "from-red-700/30 via-zinc-950 to-zinc-600/20",
+    dimensions: { width: "Personalizado", height: "Personalizado", depth: "Personalizado", weight: "Sob consulta" },
+    specs: [
+      "Deck box para Commander com janela frontal",
+      "Simbolo de mana em relevo",
+      "Espaco interno para deck de Magic",
+      "Visual preto texturizado",
+      "Preco unico de R$ 60,00"
+    ],
+    accessory: {
+      material: "Estrutura rigida personalizada",
+      dimensions: "Personalizado",
+      capacity: "Deck Commander",
+      theme: "Commander Mana Symbol",
+      color: "Preto"
+    }
+  },
+  {
     id: "prod_trash_can_commander_deckbox",
     name: "Trash Can Mtg Commander DeckBox",
     slug: "trash-can-mtg-commander-deckbox",
