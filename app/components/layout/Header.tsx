@@ -12,14 +12,9 @@ import { cn } from "@/lib/utils";
 const navItems = [
   { href: "/", label: "Inicio" },
   { href: "/produtos", label: "Produtos" },
-  { href: "/marketplace", label: "Classificados" },
   { href: "/criar-deck", label: "Criar Deck" },
   { href: "/deck-analyzer", label: "Analisador" },
-  { href: "/cartas-avulsas", label: "Cartas Avulsas" },
   { href: "/deck-boxes", label: "Deck Boxes" },
-  { href: "/acessorios", label: "Acessorios" },
-  { href: "/colecoes", label: "Colecoes" },
-  { href: "/personalizados", label: "Personalizados" },
   { href: "/sobre", label: "Sobre" },
   { href: "/contato", label: "Contato" }
 ];
