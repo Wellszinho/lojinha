@@ -106,6 +106,8 @@ type ArenaState = {
   botLibrary: OpeningHandCard[];
   playerBattlefield: ArenaPermanent[];
   botBattlefield: ArenaPermanent[];
+  playerGraveyard: OpeningHandCard[];
+  botGraveyard: OpeningHandCard[];
   playerDrewThisTurn: boolean;
   playerLandPlayedThisTurn: boolean;
   playerManaSpent: number;
@@ -769,6 +771,10 @@ function getAvailableManaSources(battlefield: ArenaPermanent[]) {
   return battlefield.filter((card) => card.isManaSource && !card.tapped).length;
 }
 
+function getReadyAttackers(battlefield: ArenaPermanent[]) {
+  return battlefield.filter((card) => card.section !== "Terrenos" && !card.tapped);
+}
+
 function createArenaEvent(kind: ArenaEventKind, actor: ArenaEvent["actor"], message: string, details: Partial<ArenaEvent> = {}): ArenaEvent {
   return {
     id: Date.now() + Math.floor(Math.random() * 1000),
@@ -850,6 +856,8 @@ function createArenaState(deckList: DeckListEntry[]): ArenaState {
     botLibrary: botLibrary.slice(7),
     playerBattlefield: [],
     botBattlefield: [],
+    playerGraveyard: [],
+    botGraveyard: [],
     playerDrewThisTurn: false,
     playerLandPlayedThisTurn: false,
     playerManaSpent: 0,
@@ -898,6 +906,8 @@ function castArenaCard(state: ArenaState, owner: "player" | "bot", cardIndex: nu
   const battlefieldKey = isPlayer ? "playerBattlefield" : "botBattlefield";
   const opponentBattlefieldKey = isPlayer ? "botBattlefield" : "playerBattlefield";
   const opponentLifeKey = isPlayer ? "botLife" : "playerLife";
+  const graveyardKey = isPlayer ? "playerGraveyard" : "botGraveyard";
+  const opponentGraveyardKey = isPlayer ? "botGraveyard" : "playerGraveyard";
   const label = isPlayer ? "Voce" : "Bot do Galo";
   const hand = state[handKey];
   const card = hand[cardIndex];
@@ -919,7 +929,9 @@ function castArenaCard(state: ArenaState, owner: "player" | "bot", cardIndex: nu
         {
           ...paidState,
           [handKey]: remainingHand,
-          [opponentBattlefieldKey]: paidState[opponentBattlefieldKey].filter((_, index) => index !== targetIndex)
+          [opponentBattlefieldKey]: paidState[opponentBattlefieldKey].filter((_, index) => index !== targetIndex),
+          [graveyardKey]: [...paidState[graveyardKey], card],
+          [opponentGraveyardKey]: [...paidState[opponentGraveyardKey], target]
         },
         "cast",
         owner,
@@ -932,7 +944,8 @@ function castArenaCard(state: ArenaState, owner: "player" | "bot", cardIndex: nu
       {
         ...paidState,
         [handKey]: remainingHand,
-        [opponentLifeKey]: Math.max(0, paidState[opponentLifeKey] - 2)
+        [opponentLifeKey]: Math.max(0, paidState[opponentLifeKey] - 2),
+        [graveyardKey]: [...paidState[graveyardKey], card]
       },
       "damage",
       owner,
@@ -942,12 +955,17 @@ function castArenaCard(state: ArenaState, owner: "player" | "bot", cardIndex: nu
   }
 
   if (card.section === "Board Wipes") {
+    const playerDestroyed = paidState.playerBattlefield.filter((item) => item.section !== "Terrenos");
+    const botDestroyed = paidState.botBattlefield.filter((item) => item.section !== "Terrenos");
+
     return addArenaLog(
       {
         ...paidState,
         [handKey]: remainingHand,
         playerBattlefield: paidState.playerBattlefield.filter((item) => item.section === "Terrenos"),
-        botBattlefield: paidState.botBattlefield.filter((item) => item.section === "Terrenos")
+        botBattlefield: paidState.botBattlefield.filter((item) => item.section === "Terrenos"),
+        playerGraveyard: [...paidState.playerGraveyard, ...(isPlayer ? [card] : []), ...playerDestroyed],
+        botGraveyard: [...paidState.botGraveyard, ...(isPlayer ? [] : [card]), ...botDestroyed]
       },
       "cast",
       owner,
@@ -962,7 +980,7 @@ function castArenaCard(state: ArenaState, owner: "player" | "bot", cardIndex: nu
     return addArenaLog(
       {
         ...secondDraw.state,
-        [battlefieldKey]: [...secondDraw.state[battlefieldKey], permanent]
+        [graveyardKey]: [...secondDraw.state[graveyardKey], card]
       },
       "cast",
       owner,
@@ -987,7 +1005,8 @@ function castArenaCard(state: ArenaState, owner: "player" | "bot", cardIndex: nu
 function attackWithBoard(state: ArenaState, owner: "player" | "bot"): ArenaState {
   const isPlayer = owner === "player";
   const battlefield = isPlayer ? state.playerBattlefield : state.botBattlefield;
-  const attackers = battlefield.filter((card) => card.section !== "Terrenos");
+  const battlefieldKey = isPlayer ? "playerBattlefield" : "botBattlefield";
+  const attackers = getReadyAttackers(battlefield);
   const damage = attackers.reduce((sum, card) => sum + Math.max(1, card.power), 0);
 
   if (!damage) {
@@ -996,9 +1015,11 @@ function attackWithBoard(state: ArenaState, owner: "player" | "bot"): ArenaState
 
   const lifeKey = isPlayer ? "botLife" : "playerLife";
   const nextLife = Math.max(0, state[lifeKey] - damage);
+  const attackerIds = new Set(attackers.map((card) => card.id));
   return addArenaLog(
     {
       ...state,
+      [battlefieldKey]: state[battlefieldKey].map((card) => (attackerIds.has(card.id) ? { ...card, tapped: true } : card)),
       [lifeKey]: nextLife,
       winner: nextLife <= 0 ? owner : state.winner
     },
@@ -1047,29 +1068,57 @@ function runBotTurn(state: ArenaState): ArenaState {
 
   const drawResult = drawArenaCard(nextState, "bot");
   nextState = addArenaLog(drawResult.state, "draw", "bot", drawResult.drawn ? "Bot do Galo comprou uma carta." : "Bot do Galo nao conseguiu comprar.");
+  if (nextState.winner) return nextState;
 
   nextState = playFirstLand(nextState, "bot");
 
   const botMana = getAvailableManaSources(nextState.botBattlefield);
   const castIndex = nextState.botHand.findIndex((card) => card.section !== "Terrenos" && getArenaCardCost(card) <= botMana);
   if (castIndex >= 0) nextState = castArenaCard(nextState, "bot", castIndex);
+  if (nextState.winner) return nextState;
 
-  if (nextState.turn > 1) nextState = attackWithBoard(nextState, "bot");
+  if (nextState.turn > 1 && getReadyAttackers(nextState.botBattlefield).length) nextState = attackWithBoard(nextState, "bot");
+  if (nextState.winner) return nextState;
 
-  const playerReady = untapArenaPermanents(nextState, "player");
+  return startPlayerTurn(nextState);
+}
+
+function startPlayerTurn(state: ArenaState): ArenaState {
+  const playerReady = {
+    ...untapArenaPermanents(state, "player"),
+    turn: state.turn + 1,
+    activeTurn: "player" as const,
+    playerDrewThisTurn: false,
+    playerLandPlayedThisTurn: false,
+    playerManaSpent: 0
+  };
+
+  const drawResult = drawArenaCard(playerReady, "player");
   return addArenaLog(
     {
-      ...playerReady,
-      turn: nextState.turn + 1,
-      activeTurn: "player",
-      playerDrewThisTurn: false,
-      playerLandPlayedThisTurn: false,
-      playerManaSpent: 0
+      ...drawResult.state,
+      playerDrewThisTurn: true
     },
-    "turn",
+    "draw",
     "player",
-    "Sua prioridade. Suas permanentes foram desviradas."
+    drawResult.drawn
+      ? `Seu turno ${playerReady.turn} comeca. Permanentes desviradas e ${drawResult.drawn.name} comprada.`
+      : `Seu turno ${playerReady.turn} comeca, mas nao havia carta para comprar.`,
+    drawResult.drawn ? { cardName: drawResult.drawn.name } : {}
   );
+}
+
+function runPlayerEndTurn(state: ArenaState): ArenaState {
+  let nextState = addArenaLog(state, "turn", "player", "Voce encerrou o turno. A arena resolve o combate e passa para o bot.");
+
+  if (getReadyAttackers(nextState.playerBattlefield).length) {
+    nextState = attackWithBoard(nextState, "player");
+  } else {
+    nextState = addArenaLog(nextState, "turn", "player", "Sem atacantes disponiveis. O turno avanca.");
+  }
+
+  if (nextState.winner) return nextState;
+  return runBotTurn(nextState);
 }
 
 export function DeckBuilderClient() {
@@ -1823,7 +1872,7 @@ function ResultSection({
   function handleArenaPass() {
     setArenaState((current) => {
       if (!current || current.activeTurn !== "player" || current.winner) return current;
-      return runBotTurn(addArenaLog(current, "turn", "player", "Voce passou o turno."));
+      return runPlayerEndTurn(current);
     });
   }
 
@@ -1955,11 +2004,7 @@ function ResultSection({
             stats={simulationStats}
             onClose={closeArena}
             onTestAgain={handleOpeningHandTest}
-            onDraw={handleArenaDraw}
-            onPlayLand={handleArenaLand}
-            onCast={handleArenaCast}
             onPlayCard={handleArenaPlayCard}
-            onAttack={handleArenaAttack}
             onPass={handleArenaPass}
           />
         ) : null}
@@ -2034,11 +2079,7 @@ function ArenaOverlay({
   stats,
   onClose,
   onTestAgain,
-  onDraw,
-  onPlayLand,
-  onCast,
   onPlayCard,
-  onAttack,
   onPass
 }: {
   phase: ArenaPhase;
@@ -2047,11 +2088,7 @@ function ArenaOverlay({
   stats: DeckSimulationStats | null;
   onClose: () => void;
   onTestAgain: () => void;
-  onDraw: () => void;
-  onPlayLand: () => void;
-  onCast: () => void;
   onPlayCard: (cardIndex: number) => void;
-  onAttack: () => void;
   onPass: () => void;
 }) {
   useEffect(() => {
@@ -2082,11 +2119,7 @@ function ArenaOverlay({
           stats={stats}
           onClose={onClose}
           onTestAgain={onTestAgain}
-          onDraw={onDraw}
-          onPlayLand={onPlayLand}
-          onCast={onCast}
           onPlayCard={onPlayCard}
-          onAttack={onAttack}
           onPass={onPass}
         />
       )}
@@ -2222,22 +2255,14 @@ function ArenaDuel({
   stats,
   onClose,
   onTestAgain,
-  onDraw,
-  onPlayLand,
-  onCast,
   onPlayCard,
-  onAttack,
   onPass
 }: {
   arena: ArenaState;
   stats: DeckSimulationStats | null;
   onClose: () => void;
   onTestAgain: () => void;
-  onDraw: () => void;
-  onPlayLand: () => void;
-  onCast: () => void;
   onPlayCard: (cardIndex: number) => void;
-  onAttack: () => void;
   onPass: () => void;
 }) {
   const [draggingCardIndex, setDraggingCardIndex] = useState<number | null>(null);
@@ -2266,6 +2291,7 @@ function ArenaDuel({
             <ArenaBadge label="Bot do Galo" value={`${arena.botLife} vida`} tone="purple" />
             <ArenaBadge label="Turno" value={`${arena.turn} ${arena.activeTurn === "player" ? "Sua prioridade" : "Bot pensando"}`} tone="neutral" />
             <ArenaBadge label="Mana" value={`${playerMana}/${playerTotalMana} disponivel`} tone="neutral" />
+            <ArenaBadge label="Leitura" value={arena.winner ? (arena.winner === "player" ? "Voce venceu" : "Bot venceu") : getHandVerdict(stats)} tone="neutral" />
           </div>
           <div className="flex flex-wrap gap-2">
             <Button type="button" onClick={onTestAgain}>
@@ -2278,19 +2304,9 @@ function ArenaDuel({
             </Button>
           </div>
         </div>
-        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-          <HandStat label="Mulligan" value={stats ? `${stats.mulligan}%` : "--"} />
-          <HandStat label="Abrir ramp" value={stats ? `${stats.ramp}%` : "--"} />
-          <HandStat label="Abrir draw" value={stats ? `${stats.draw}%` : "--"} />
-          <HandStat label="Abrir terrenos" value={stats ? `${stats.lands}%` : "--"} />
-          <div className="rounded-[7px] border border-gold/30 bg-gold/10 p-3">
-            <span className="text-xs font-bold uppercase text-gold">Leitura da IA</span>
-            <strong className="mt-1 block text-sm text-frost">{arena.winner ? (arena.winner === "player" ? "Voce venceu" : "Bot venceu") : getHandVerdict(stats)}</strong>
-          </div>
-        </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 gap-3 xl:grid-cols-[1fr_310px]">
+      <div className="grid min-h-0 flex-1 gap-3 xl:grid-cols-[minmax(0,1fr)_270px]">
         <div
           onDragOver={(event) => {
             if (!isPlayerTurn) return;
@@ -2325,6 +2341,7 @@ function ArenaDuel({
             mana={botMana}
             totalMana={botTotalMana}
             battlefield={arena.botBattlefield}
+            graveyard={arena.botGraveyard}
             handCount={arena.botHand.length}
             opponent
           />
@@ -2337,6 +2354,7 @@ function ArenaDuel({
             mana={playerMana}
             totalMana={playerTotalMana}
             battlefield={arena.playerBattlefield}
+            graveyard={arena.playerGraveyard}
             handCount={arena.playerHand.length}
           />
 
@@ -2362,19 +2380,15 @@ function ArenaDuel({
           </div>
         </div>
 
-        <aside className="grid min-h-0 gap-3 rounded-[8px] border border-white/10 bg-obsidian/80 p-3">
-          <div>
-            <h3 className="text-lg font-black text-frost">Acoes</h3>
-            <p className="mt-1 text-xs leading-5 text-mist">
-              Arraste uma carta da mao para o seu campo. Terrenos baixam; magicas usam mana disponivel.
-            </p>
-          </div>
-          <div className="grid gap-2">
-            <Button type="button" disabled={!isPlayerTurn || arena.playerDrewThisTurn} onClick={onDraw}>Comprar carta</Button>
-            <Button type="button" variant="secondary" disabled={!isPlayerTurn || arena.playerLandPlayedThisTurn} onClick={onPlayLand}>Baixar terreno</Button>
-            <Button type="button" variant="secondary" disabled={!isPlayerTurn} onClick={onCast}>Conjurar carta</Button>
-            <Button type="button" variant="secondary" disabled={!isPlayerTurn} onClick={onAttack}>Atacar</Button>
-            <Button type="button" disabled={!isPlayerTurn} onClick={onPass}>Passar turno</Button>
+        <aside className="grid min-h-0 grid-rows-[auto_auto_1fr] gap-3 rounded-[8px] border border-white/10 bg-obsidian/80 p-3">
+          <div className="rounded-[7px] border border-white/10 bg-black/25 p-3">
+            <span className="text-[10px] font-black uppercase tracking-[.2em] text-mist">Fluxo automatico</span>
+            <strong className="mt-2 block text-sm text-frost">
+              {isPlayerTurn ? "Sua prioridade" : arena.winner ? "Partida encerrada" : "Bot resolvendo"}
+            </strong>
+            <Button type="button" className="mt-3 w-full" disabled={!isPlayerTurn} onClick={onPass}>
+              Finalizar turno
+            </Button>
           </div>
           {arena.event ? (
             <div className="rounded-[7px] border border-gold/35 bg-gold/10 p-3 shadow-[0_0_26px_rgba(215,180,106,.12)]">
@@ -2566,6 +2580,7 @@ function ArenaZone({
   mana,
   totalMana,
   battlefield,
+  graveyard,
   handCount,
   opponent = false
 }: {
@@ -2574,11 +2589,15 @@ function ArenaZone({
   mana: number;
   totalMana: number;
   battlefield: ArenaPermanent[];
+  graveyard: OpeningHandCard[];
   handCount: number;
   opponent?: boolean;
 }) {
+  const manaCards = battlefield.filter((card) => card.isManaSource);
+  const creatureCards = battlefield.filter((card) => !card.isManaSource);
+
   return (
-    <section className={cn("relative grid min-h-[185px] gap-2 p-4", opponent ? "content-start" : "content-end pb-[270px] sm:pb-[320px]")}>
+    <section className={cn("relative z-10 grid gap-3 p-4", opponent ? "min-h-[270px] content-start pt-24" : "min-h-[360px] content-end pb-[270px] sm:pb-[320px]")}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-black uppercase tracking-[.22em] text-gold">{title}</h3>
@@ -2592,16 +2611,83 @@ function ArenaZone({
           </div>
         ) : null}
       </div>
-      <div className="grid min-h-[112px] grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-7">
-        {battlefield.length ? (
-          battlefield.slice(0, 14).map((card) => <ArenaPermanentCard key={card.id} card={card} />)
-        ) : (
-          <div className="col-span-full grid min-h-[90px] place-items-center rounded-[7px] border border-dashed border-white/10 bg-black/20 text-xs font-bold text-mist">
-            Campo vazio
-          </div>
-        )}
+      <div className={cn("grid gap-3", opponent ? "lg:grid-cols-[1fr_210px]" : "lg:grid-cols-[220px_1fr_180px]")}>
+        {!opponent ? (
+          <ArenaFieldGroup title="Mana" cards={manaCards} variant="mana" />
+        ) : null}
+        <ArenaFieldGroup title={opponent ? "Ameacas" : "Criaturas"} cards={creatureCards} variant="battlefield" />
+        <div className="grid gap-3">
+          {opponent ? <ArenaFieldGroup title="Mana" cards={manaCards} variant="mana" compact /> : null}
+          <ArenaGraveyard cards={graveyard} />
+        </div>
       </div>
     </section>
+  );
+}
+
+function ArenaFieldGroup({
+  title,
+  cards,
+  variant,
+  compact = false
+}: {
+  title: string;
+  cards: ArenaPermanent[];
+  variant: "mana" | "battlefield";
+  compact?: boolean;
+}) {
+  const limit = compact ? 4 : variant === "mana" ? 8 : 12;
+
+  return (
+    <div
+      className={cn(
+        "rounded-[8px] border bg-black/25 p-3 shadow-[inset_0_0_32px_rgba(0,0,0,.22)]",
+        variant === "mana" ? "border-emerald-300/15" : "border-gold/18",
+        compact ? "min-h-[126px]" : variant === "mana" ? "min-h-[170px]" : "min-h-[190px]"
+      )}
+    >
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className={cn("text-[10px] font-black uppercase tracking-[.2em]", variant === "mana" ? "text-emerald-200" : "text-gold")}>{title}</span>
+        <span className="rounded-full border border-white/10 bg-white/[.06] px-2 py-0.5 text-[10px] font-black text-mist">{cards.length}</span>
+      </div>
+      {cards.length ? (
+        <div className={cn("grid gap-2", compact ? "grid-cols-2" : variant === "mana" ? "grid-cols-2" : "grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5")}>
+          {cards.slice(0, limit).map((card) => (
+            <ArenaPermanentCard key={card.id} card={card} compact={compact || variant === "mana"} />
+          ))}
+        </div>
+      ) : (
+        <div className="grid min-h-[84px] place-items-center rounded-[7px] border border-dashed border-white/10 bg-black/20 text-xs font-bold text-mist">
+          Vazio
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ArenaGraveyard({ cards }: { cards: OpeningHandCard[] }) {
+  const preview = cards.slice(-3).reverse();
+
+  return (
+    <div className="min-h-[132px] rounded-[8px] border border-purple-300/15 bg-black/25 p-3 shadow-[inset_0_0_32px_rgba(0,0,0,.22)]">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-[10px] font-black uppercase tracking-[.2em] text-purple-200">Cemiterio</span>
+        <span className="rounded-full border border-white/10 bg-white/[.06] px-2 py-0.5 text-[10px] font-black text-mist">{cards.length}</span>
+      </div>
+      {preview.length ? (
+        <div className="space-y-2">
+          {preview.map((card, index) => (
+            <div key={`${card.name}-${index}`} className="truncate rounded-[6px] border border-white/10 bg-white/[.04] px-2 py-1 text-xs font-bold text-mist">
+              {card.name}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="grid min-h-[70px] place-items-center rounded-[7px] border border-dashed border-white/10 bg-black/20 text-xs font-bold text-mist">
+          Vazio
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2618,7 +2704,7 @@ function CardBack({ index }: { index: number }) {
   );
 }
 
-function ArenaPermanentCard({ card }: { card: ArenaPermanent }) {
+function ArenaPermanentCard({ card, compact = false }: { card: ArenaPermanent; compact?: boolean }) {
   const [cardImage, setCardImage] = useState<string | null | undefined>(() => cardImageCache.get(card.name));
   const theme = getOpeningHandTheme(card.section);
 
@@ -2648,18 +2734,30 @@ function ArenaPermanentCard({ card }: { card: ArenaPermanent }) {
   return (
     <div
       className={cn(
-        "group relative min-h-[126px] rounded-[7px] border p-1 transition",
+        "group relative rounded-[7px] border p-1 transition duration-500 ease-out",
+        compact ? "min-h-[104px]" : "min-h-[126px]",
         card.tapped ? "border-gold/35 bg-gold/10 opacity-85" : "border-white/10 bg-black/25"
       )}
     >
       <div
-        className={cn("relative mx-auto grid h-24 place-items-center transition-transform duration-300", card.tapped && "rotate-90 scale-[.86]")}
+        className={cn(
+          "relative mx-auto grid place-items-center transition-transform duration-500 ease-out",
+          compact ? "h-20" : "h-24",
+          card.tapped && "rotate-90 scale-[.86]"
+        )}
         style={card.tapped ? { animation: "arenaTapGlow 900ms ease-out both" } : undefined}
       >
         {cardImage ? (
-          <img src={cardImage} alt={card.name} className="h-24 rounded-[5px] object-contain transition group-hover:scale-125 group-hover:shadow-[0_16px_30px_rgba(0,0,0,.75)]" />
+          <img
+            src={cardImage}
+            alt={card.name}
+            className={cn(
+              "rounded-[5px] object-contain transition duration-500 ease-out group-hover:scale-110 group-hover:shadow-[0_16px_30px_rgba(0,0,0,.75)]",
+              compact ? "h-20" : "h-24"
+            )}
+          />
         ) : (
-          <div className="grid h-24 w-full place-items-center rounded-[5px] px-2 text-center text-[10px] font-black text-frost" style={{ background: theme.art }}>
+          <div className={cn("grid w-full place-items-center rounded-[5px] px-2 text-center text-[10px] font-black text-frost", compact ? "h-20" : "h-24")} style={{ background: theme.art }}>
             {card.name}
           </div>
         )}
@@ -2704,8 +2802,8 @@ function OpeningHandCardView({
   const center = (total - 1) / 2;
   const angle = isHovered ? 0 : (index - center) * (compact ? 6 : 7);
   const offset = (index - center) * (compact ? 82 : 112);
-  const lift = isHovered ? (compact ? -32 : -64) : Math.abs(index - center) * (compact ? 7 : 12);
-  const scale = isHovered ? (compact ? 1.22 : 1.34) : 1;
+  const lift = isHovered ? (compact ? -24 : -50) : Math.abs(index - center) * (compact ? 7 : 12);
+  const scale = isHovered ? (compact ? 1.16 : 1.24) : 1;
 
   useEffect(() => {
     let cancelled = false;
@@ -2749,7 +2847,7 @@ function OpeningHandCardView({
       onDragEnd={onDragEnd}
       tabIndex={0}
       className={cn(
-        "absolute left-1/2 rounded-[16px] text-[#17130d] outline-none shadow-[0_28px_42px_rgba(0,0,0,.58)] transition-[filter,box-shadow] duration-200 hover:shadow-[0_34px_70px_rgba(0,0,0,.82)] focus:shadow-[0_34px_70px_rgba(0,0,0,.82)]",
+        "absolute left-1/2 rounded-[16px] text-[#17130d] outline-none shadow-[0_28px_42px_rgba(0,0,0,.58)] transition-[transform,filter,box-shadow,opacity] duration-700 ease-out will-change-transform hover:shadow-[0_34px_70px_rgba(0,0,0,.82)] focus:shadow-[0_34px_70px_rgba(0,0,0,.82)]",
         compact ? "bottom-0 h-[232px] w-[166px] sm:h-[270px] sm:w-[194px]" : "bottom-[8%] h-[360px] w-[258px] sm:h-[430px] sm:w-[308px]",
         draggable && "cursor-grab active:cursor-grabbing",
         isDragging && "opacity-45"
